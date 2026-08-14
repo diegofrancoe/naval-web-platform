@@ -1,0 +1,96 @@
+{
+  "$schema": "https://openapi.vercel.sh/vercel.json",
+  "redirects": [
+    {
+      "source": "/blog",
+      "destination": "/guias",
+      "permanent": true
+    },
+    {
+      "source": "/preguntas",
+      "destination": "/preguntas-frecuentes",
+      "permanent": true
+    },
+    {
+      "source": "/pedido",
+      "destination": "/tienda",
+      "permanent": true
+    },
+    {
+      "source": "/lineas",
+      "destination": "/productos",
+      "permanent": true
+    },
+    {
+      "source": "/lineas-limpieza-general",
+      "destination": "/productos/limpieza-general",
+      "permanent": true
+    },
+    {
+      "source": "/lineas-pisos-superficies",
+      "destination": "/productos/pisos-y-superficies",
+      "permanent": true
+    },
+    {
+      "source": "/lineas-lavanderia",
+      "destination": "/productos/lavanderia",
+      "permanent": true
+    },
+    {
+      "source": "/lineas-desinfeccion",
+      "destination": "/productos/higiene-y-desinfeccion",
+      "permanent": true
+    },
+    {
+      "source": "/sectores-cocinas",
+      "destination": "/sectores/cocinas",
+      "permanent": true
+    },
+    {
+      "source": "/sectores-lavanderia",
+      "destination": "/sectores/lavanderia",
+      "permanent": true
+    },
+    {
+      "source": "/sectores-hogar",
+      "destination": "/sectores/hogar",
+      "permanent": true
+    },
+    {
+      "source": "/sectores",
+      "destination": "/productos",
+      "permanent": true
+    },
+    {
+      "source": "/quienes-somos",
+      "destination": "/",
+      "permanent": true
+    }
+  ],
+  "headers": [
+    {
+      "source": "/sitemap.xml",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "application/xml; charset=utf-8"
+        }
+      ]
+    },
+    {
+      "source": "/robots.txt",
+      "headers": [
+        {
+          "key": "Content-Type",
+          "value": "text/plain; charset=utf-8"
+        }
+      ]
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/((?!sitemap\\.xml|robots\\.txt).*)",
+      "destination": "/index.html"
+    }
+  ]
+}
