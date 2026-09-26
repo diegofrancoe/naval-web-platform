@@ -119,6 +119,9 @@ async function requestMakeReply(webhookUrl, body) {
   }
 
   const extractedReply = extractWebhookReply(payload)
+  if (body?.requestType === 'question' && (!extractedReply || isTechnicalWebhookAck(extractedReply))) {
+    return ''
+  }
   return extractedReply && !isTechnicalWebhookAck(extractedReply)
     ? extractedReply.trim()
     : buildDeliveredFallbackReply(body?.requestType)
@@ -170,7 +173,7 @@ export default async function handler(request, response) {
   if (webhookUrl) {
     try {
       const reply = await requestMakeReply(webhookUrl, body)
-      return response.status(200).json({ reply, delivered: true, provider: 'make' })
+      if (reply) return response.status(200).json({ reply, delivered: true, provider: 'make' })
     } catch (error) {
       makeError = error
       console.error('Naval chatbot Make request failed', { status: error?.status ?? null, name: error?.name ?? 'Error' })

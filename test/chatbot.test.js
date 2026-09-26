@@ -277,3 +277,34 @@ test('el endpoint devuelve una ayuda util si Make responde con error', async () 
   assert.equal(payload.provider, 'local-fallback')
   assert.doesNotMatch(payload.reply, /WhatsApp/)
 })
+
+test('una confirmación técnica de Make no se presenta como respuesta a una pregunta', async () => {
+  const originalFetch = global.fetch
+  const originalWebhookUrl = process.env.MAKE_WEBHOOK_URL
+  const originalOpenAIKey = process.env.OPENAI_API_KEY
+  global.fetch = async () => new Response('Accepted', { status: 200 })
+  process.env.MAKE_WEBHOOK_URL = 'https://example.test/webhook'
+  delete process.env.OPENAI_API_KEY
+
+  let payload = null
+  const response = {
+    status() { return this },
+    json(value) { payload = value; return value },
+    setHeader() {},
+  }
+
+  try {
+    await handler({ method: 'POST', body: { message: '¿Qué recomiendan para el baño?', requestType: 'question' } }, response)
+  } finally {
+    global.fetch = originalFetch
+    if (originalWebhookUrl === undefined) delete process.env.MAKE_WEBHOOK_URL
+    else process.env.MAKE_WEBHOOK_URL = originalWebhookUrl
+    if (originalOpenAIKey === undefined) delete process.env.OPENAI_API_KEY
+    else process.env.OPENAI_API_KEY = originalOpenAIKey
+  }
+
+  assert.equal(payload.delivered, false)
+  assert.equal(payload.provider, 'local')
+  assert.match(payload.reply, /superficie|espacio/i)
+  assert.doesNotMatch(payload.reply, /recibimos|registramos/i)
+})
