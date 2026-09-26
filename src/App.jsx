@@ -1,5 +1,30 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { buildProductAssistantCatalog, getProductAssistantResponse } from './data/productAssistantCatalog'
+import {
+  buildProductAssistantCatalog,
+  findAssistantProduct,
+  getProductAssistantResponse,
+  getProductRecommendationResponse,
+  normalizeAssistantText,
+} from './data/productAssistantCatalog'
+import {
+  extractDailySolutionLiters,
+  extractOperationSize,
+  extractTrainingDate,
+  extractTrainingTime,
+  extractUsageFrequency,
+  hasProductPackageQuantity,
+  isAffirmativeAnswer,
+  isAmbiguousProductInterest,
+  isGenericProductReference,
+  isDeliveryInformationRequest,
+  isValidAttendeeAnswer,
+  isValidAddressAnswer,
+  isValidCityAnswer,
+  parseDilutionMlPerLiter,
+  parsePresentationMilliliters,
+  wantsQuantityHelp,
+} from './data/chatbotWorkflow'
+import { getDeliveryAssistantResponse, shouldContinueDeliveryInquiry } from './data/deliveryAssistant'
 import brandImage from './assets/naval.png'
 import kitchenHeroImage from './assets/optimized/cocina-hero-fast.jpg'
 import shopHeroVideo from './assets/video-tienda.mp4'
@@ -138,6 +163,7 @@ const makeWebhookEndpoint = import.meta.env.VITE_MAKE_WEBHOOK_ENDPOINT || '/api/
 const cookieConsentStorageKey = 'naval-cookie-consent'
 const chatbotSessionStorageKey = 'naval-chatbot-session-id'
 const chatbotSessionActivityStorageKey = 'naval-chatbot-session-last-activity'
+const chatbotConversationStorageKey = 'naval-chatbot-conversation-v2'
 const chatbotSessionInactivityLimit = 24 * 60 * 60 * 1000
 const siteUrl = 'https://www.productosnaval.com'
 const brandName = 'Productos NAVAL'
@@ -2388,7 +2414,16 @@ const allCatalogProducts = pageContent.lineas.productFamilies.flatMap((family) =
   family.products.map((product) => ({ product, family })),
 )
 const productByName = new Map(allCatalogProducts.map(({ product }) => [product.name, product]))
-const productAssistantCatalog = buildProductAssistantCatalog(allCatalogProducts)
+const productAssistantCatalog = buildProductAssistantCatalog(allCatalogProducts).map((assistantProduct) => {
+  const catalogItem = allCatalogProducts.find(({ product }) => product.name === assistantProduct.name)
+  if (!catalogItem) return assistantProduct
+
+  return {
+    ...assistantProduct,
+    surfaces: getProductSurfaces(catalogItem.product, catalogItem.family),
+    applications: getProductApplications(catalogItem.product, catalogItem.family),
+  }
+})
 
 const createFocusedLinePage = ({ key, familyId, eyebrow, title, intro, seoTitle, seoDescription, productNames }) => {
   const baseFamily = pageContent.lineas.productFamilies.find((family) => family.id === familyId)
@@ -4763,8 +4798,10 @@ const chatbotQuickPrompts = [
   '📋 Solicitar una cotización',
   '🎓 Capacitaciones',
   '📦 Consultar productos',
+  '🧭 Buscar en el sitio',
   '🚚 Información de entregas',
   '⚠️ Reportar una queja',
+  '👤 Hablar con un asesor',
 ]
 
 const complaintKeywords = [
@@ -4814,15 +4851,33 @@ const difficultQuestionKeywords = [
   'certificado',
 ]
 
+function mentionsChatbotTraining(message) {
+  return /\b(?:capacitacion|capacitaciones|capacitar|certificacion|certificaciones|formacion|formaciones)\b/.test(normalizeAssistantText(message))
+}
+
+const chatbotSectorRules = [
+  { pattern: /hotel/i, title: 'Hotelero', label: 'hoteles' },
+  { pattern: /restaurante/i, title: 'Restaurante', label: 'restaurantes' },
+  { pattern: /colegio/i, title: 'Colegios', label: 'colegios' },
+  { pattern: /gimnasio|gym/i, title: 'Gym', label: 'gimnasios' },
+  { pattern: /conjunto/i, title: 'Conjunto residencial', label: 'conjuntos residenciales' },
+  { pattern: /lavander/i, title: 'Lavandería', label: 'lavanderías' },
+  { pattern: /cocina/i, title: 'Cocinas', label: 'cocinas' },
+  { pattern: /hogar/i, title: 'Hogar', label: 'hogares' },
+  { pattern: /empresa|oficina/i, title: 'Empresarial', label: 'empresas y oficinas' },
+]
+
 function wantsHumanChatbotHandoff(message) {
-  return /\b(?:hablar|conectar|comunicar|comunicarme|pasar|pasarme|contactar|contactarme)\s+(?:con\s+)?(?:un\s+|una\s+)?(?:humano|persona|asesor|asesora|vendedor|vendedora|comercial|agente|ejecutivo|ejecutiva)\b/i.test(message)
+  return /\b(?:(?:hablar|conectar|comunicar|comunicarme|pasar|pasarme|contactar|contactarme)\s+(?:con\s+)?(?:un\s+|una\s+)?(?:humano|persona|asesor|asesora|vendedor|vendedora|comercial|agente|ejecutivo|ejecutiva)|(?:necesito|quiero|busco)\s+(?:un\s+|una\s+)?(?:asesor|asesora|vendedor|vendedora|agente|ejecutivo|ejecutiva|persona|humano)|asesor[ií]a\s+(?:humana|comercial))\b/i.test(message)
 }
 
 function getChatbotIntent(message) {
   const normalizedMessage = message.toLowerCase()
 
+  if (isDeliveryInformationRequest(message)) return 'question'
   if (complaintKeywords.some((keyword) => normalizedMessage.includes(keyword))) return 'complaint'
   if (wantsHumanChatbotHandoff(message)) return 'human'
+  if (mentionsChatbotTraining(message)) return 'training'
   if (orderKeywords.some((keyword) => normalizedMessage.includes(keyword))) return 'quote'
 
   return 'question'
@@ -4832,7 +4887,14 @@ const chatbotRequestLabels = {
   quote: 'Cotización',
   human: 'Asesor humano',
   complaint: 'Queja',
+  training: 'Capacitación',
   question: 'Pregunta',
+}
+
+const chatbotRequestPriorities = {
+  quote: 'ALTA',
+  complaint: 'ALTA',
+  training: 'MEDIA',
 }
 
 const chatbotFieldStopPattern = String.raw`(?=\s*(?:,|\.|;|\n|\b(?:mi\s+nombre|nombre|me\s+llamo|soy|empresa|compañ[ií]a|negocio|ciudad|direcci[oó]n|direccion|tel[eé]fono|telefono|celular|whatsapp|correo|email|mail|producto|cantidad|motivo)\b|$))`
@@ -4875,7 +4937,7 @@ function extractChatbotContactData(message) {
     ]),
     city: extractChatbotField(message, [
       new RegExp('\\b(?:ciudad)\\s*(?:es|:)?\\s*([\\s\\S]*?)' + chatbotFieldStopPattern, 'i'),
-      /\ben\s+([a-záéíóúñü\s]+?)(?=\s*(?:,|\.|;|\n|$))/i,
+      /\b(?:estoy|queda|entrega|vivo)\s+en\s+([a-záéíóúñü\s-]+?)(?=\s*(?:,|\.|;|\n|$))/i,
     ]),
     address: extractChatbotField(message, [
       new RegExp('\\b(?:direcci[oó]n|direccion|dirección)\\s*(?:es|:)?\\s*([\\s\\S]*?)' + chatbotFieldStopPattern, 'i'),
@@ -4892,6 +4954,9 @@ function extractChatbotContactData(message) {
     ]),
     reason: extractChatbotField(message, [
       new RegExp('\\b(?:motivo(?:\\s+de\\s+contacto)?)\\s*(?:es|:)?\\s*([\\s\\S]*?)' + chatbotFieldStopPattern, 'i'),
+    ]),
+    sector: extractChatbotField(message, [
+      /\b(hotel(?:es)?|restaurante(?:s)?|colegio(?:s)?|gimnasio(?:s)?|gym|empresa(?:s)?|oficina(?:s)?|conjunto(?:s)?(?:\s+residencial(?:es)?)?|lavander[ií]a(?:s)?|cocina(?:s)?|hogar)\b/i,
     ]),
   }
 }
@@ -4917,8 +4982,700 @@ function extractChatbotConversationContactData(chatMessages) {
         product: '',
         quantity: '',
         reason: '',
+        sector: '',
       },
     )
+}
+
+const chatbotWorkflowTypes = new Set(['quote', 'complaint', 'training'])
+
+const chatbotWorkflowStarterPatterns = {
+  quote: /^\s*(?:📋\s*)?(?:solicitar|quiero|necesito|deseo)?\s*(?:una\s+)?cotizaci[oó]n\s*[.!]?\s*$/i,
+  complaint: /^\s*(?:⚠️\s*)?(?:reportar|poner|quiero|necesito)?\s*(?:una\s+)?(?:queja|reclamo)\s*[.!]?\s*$/i,
+  training: /^\s*(?:🎓\s*)?(?:solicitar|quiero|necesito|deseo|agendar|programar)?\s*(?:una\s+)?capacitaci[oó]n(?:es)?\s*[.!]?\s*$/i,
+}
+
+const chatbotWorkflowFieldOrder = {
+  quote: ['product', 'quantity', 'city', 'address', 'name', 'phone', 'email'],
+  complaint: ['reason', 'detailsConfirmed', 'name', 'city', 'phone', 'email', 'submissionConfirmed'],
+  training: ['topics', 'company', 'attendees', 'preferredDate', 'preferredTime', 'detailsConfirmed', 'city', 'address', 'name', 'phone', 'email', 'submissionConfirmed'],
+}
+
+function createChatbotWorkflow(type) {
+  return { type, data: {} }
+}
+
+function getChatbotWorkflowFields(workflow) {
+  const quoteProductFields = workflow.data.products?.length > 1 ? ['product', 'selectionConfirmed'] : ['product']
+
+  if (workflow.type === 'quote' && workflow.data.needsQuantityHelp) {
+    return [...quoteProductFields, 'operationSize', 'usageFrequency', 'solutionVolume', 'quantity', 'quantityConfirmed', 'orderConfirmed', 'city', 'address', 'name', 'phone', 'email', 'submissionConfirmed']
+  }
+
+  if (workflow.type === 'quote') {
+    return [...quoteProductFields, 'quantity', 'orderConfirmed', 'city', 'address', 'name', 'phone', 'email', 'submissionConfirmed']
+  }
+
+  return chatbotWorkflowFieldOrder[workflow.type] ?? []
+}
+
+function getChatbotWorkflowMissingField(workflow) {
+  return getChatbotWorkflowFields(workflow).find((field) => {
+    if (field === 'contact') return !workflow.data.phone && !workflow.data.email
+    return !workflow.data[field]
+  }) ?? ''
+}
+
+function wantsChatbotQuantityEstimate(message) {
+  return wantsQuantityHelp(message)
+}
+
+function getRecentSingleChatbotProduct(chatMessages) {
+  for (let index = chatMessages.length - 1; index >= 0; index -= 1) {
+    const normalizedText = normalizeAssistantText(chatMessages[index]?.text ?? '')
+    const mentionedProducts = productAssistantCatalog.filter((product) =>
+      normalizedText.includes(normalizeAssistantText(product.name)),
+    )
+    if (mentionedProducts.length === 1) return mentionedProducts[0]
+    if (mentionedProducts.length > 1) return null
+  }
+  return null
+}
+
+function getRecentChatbotProducts(chatMessages) {
+  for (let index = chatMessages.length - 1; index >= 0; index -= 1) {
+    const normalizedText = normalizeAssistantText(chatMessages[index]?.text ?? '')
+    const mentionedProducts = productAssistantCatalog.filter((product) =>
+      normalizedText.includes(normalizeAssistantText(product.name)),
+    )
+    if (mentionedProducts.length) return mentionedProducts
+  }
+  return []
+}
+
+function refersToRecentProductSet(message) {
+  return /\b(?:esos|esas|estos|estas|todos|todas|los\s+\d+|las\s+\d+|los\s+cuatro|las\s+cuatro)\b/i.test(message)
+}
+
+function asksForQuoteSummary(message) {
+  return /\b(?:conf[ií]rmame|resumen|cu[aá]ntos?\s+productos|qu[eé]\s+(?:productos?\s+)?ped[ií]|qu[eé]\s+llev[oa]|mi\s+(?:pedido|cotizaci[oó]n)|qu[eé]\s+vas\s+a\s+enviar)\b/i.test(message)
+}
+
+function asksForWorkflowSummary(message, type) {
+  if (/\b(?:conf[ií]rmame|resumen|qu[eé]\s+(?:datos?|informaci[oó]n)\s+tienes|qu[eé]\s+te\s+dije|qu[eé]\s+vas\s+a\s+enviar)\b/i.test(message)) return true
+  if (type === 'quote') return asksForQuoteSummary(message)
+  if (type === 'training') return /\b(?:qu[eé]\s+(?:tema|fecha|horario|capacitaci[oó]n)|cu[aá]ntas?\s+personas|mi\s+capacitaci[oó]n)\b/i.test(message)
+  if (type === 'complaint') return /\b(?:qu[eé]\s+(?:queja|reclamo|problema)\s+(?:anotaste|registraste|tienes)|mi\s+(?:queja|reclamo))\b/i.test(message)
+  return false
+}
+
+function getQuoteProductNames(data) {
+  if (Array.isArray(data.products) && data.products.length) return data.products
+  return data.product ? [data.product] : []
+}
+
+function buildQuoteOrderSummary(data, { includeContact = false } = {}) {
+  const productNames = getQuoteProductNames(data)
+  const lines = [
+    'Resumen de la cotización',
+    '',
+    `Productos (${productNames.length}):`,
+    ...productNames.map((productName) => `• ${productName}`),
+    data.quantity ? `Cantidad: ${data.quantity}` : 'Cantidad: pendiente por definir',
+  ]
+
+  if (includeContact) {
+    lines.push(
+      '',
+      `Ciudad: ${data.city || 'pendiente'}`,
+      `Dirección: ${data.address || 'pendiente'}`,
+      `Nombre: ${data.name || 'pendiente'}`,
+      `Teléfono: ${data.phone || 'pendiente'}`,
+      `Correo: ${data.email || 'pendiente'}`,
+    )
+  }
+
+  return lines.join('\n')
+}
+
+function formatQuoteQuantity(message, productCount = 1) {
+  const match = message.match(/\b(\d+(?:[.,]\d+)?)\s*(unidades?|envases?|botellas?|bidones?|canecas?|cajas?|galones?|litros?|lts?|cc|ml)\b/i)
+  if (!match) return cleanChatbotFieldValue(message)
+
+  const amount = Number(match[1].replace(',', '.'))
+  const unit = match[2]
+  if (productCount > 1 && /\b(?:cada\s+uno|cada\s+una|cada\s+producto|de\s+cada)\b/i.test(message)) {
+    const total = Number.isFinite(amount) ? amount * productCount : ''
+    return `${match[1]} ${unit} de cada producto${total ? ` (${total} ${unit} en total)` : ''}`
+  }
+
+  return match[0]
+}
+
+function getQuotePendingPrompt(field) {
+  const prompts = {
+    product: 'Indícame qué producto o necesidad deseas cotizar.',
+    selectionConfirmed: 'Confirma si deseas incluir esos productos o dime cuál quieres retirar.',
+    quantity: 'Indícame la cantidad y presentación que necesitas. Si no la conoces, puedo ayudarte a estimarla.',
+    orderConfirmed: 'Confirma si los productos y cantidades del resumen son correctos.',
+    city: '¿En qué ciudad necesitas la entrega?',
+    address: '¿Cuál es la dirección de entrega?',
+    name: '¿A nombre de quién preparamos la cotización?',
+    phone: '¿Cuál es tu teléfono de contacto?',
+    email: '¿A qué correo enviamos la cotización?',
+    submissionConfirmed: 'Confirma si deseas enviar esta solicitud al equipo comercial.',
+  }
+  return prompts[field] || 'Comparte el dato pendiente para continuar.'
+}
+
+function buildTrainingSummary(data, { includeContact = false } = {}) {
+  const lines = [
+    'Resumen de la capacitación',
+    '',
+    `Tema: ${data.topics || 'pendiente'}`,
+    `Empresa: ${data.company || 'pendiente'}`,
+    `Participantes: ${data.attendees || 'pendiente'}`,
+    `Fecha preferida: ${data.preferredDate || 'pendiente'}`,
+    `Horario preferido: ${data.preferredTime || 'pendiente'}`,
+  ]
+
+  if (includeContact) {
+    lines.push(
+      '',
+      `Ciudad: ${data.city || 'pendiente'}`,
+      `Dirección: ${data.address || 'pendiente'}`,
+      `Nombre: ${data.name || 'pendiente'}`,
+      `Teléfono: ${data.phone || 'pendiente'}`,
+      `Correo: ${data.email || 'pendiente'}`,
+    )
+  }
+
+  return lines.join('\n')
+}
+
+function buildComplaintSummary(data, { includeContact = false } = {}) {
+  const lines = [
+    'Resumen de la queja',
+    '',
+    `Descripción: ${data.reason || 'pendiente'}`,
+  ]
+
+  if (data.product) lines.push(`Producto relacionado: ${data.product}`)
+  if (data.orderNumber) lines.push(`Pedido o factura: ${data.orderNumber}`)
+
+  if (includeContact) {
+    lines.push(
+      '',
+      `Nombre: ${data.name || 'pendiente'}`,
+      `Ciudad: ${data.city || 'pendiente'}`,
+      `Teléfono: ${data.phone || 'pendiente'}`,
+      `Correo: ${data.email || 'pendiente'}`,
+    )
+  }
+
+  return lines.join('\n')
+}
+
+function buildWorkflowSummary(workflow, options) {
+  if (workflow.type === 'quote') return buildQuoteOrderSummary(workflow.data, options)
+  if (workflow.type === 'training') return buildTrainingSummary(workflow.data, options)
+  if (workflow.type === 'complaint') return buildComplaintSummary(workflow.data, options)
+  return ''
+}
+
+function getWorkflowPendingPrompt(type, field) {
+  if (type === 'quote') return getQuotePendingPrompt(field)
+
+  const promptsByType = {
+    training: {
+      topics: 'Indícame el producto o tema de la capacitación.',
+      company: '¿Cuál es el nombre de la empresa?',
+      attendees: '¿Cuántas personas asistirían?',
+      preferredDate: '¿Qué fecha prefieren?',
+      preferredTime: '¿Qué horario prefieren?',
+      detailsConfirmed: 'Confirma si el tema, la empresa, los participantes, la fecha y el horario son correctos.',
+      city: '¿En qué ciudad se realizaría?',
+      address: '¿Cuál es la dirección de la capacitación?',
+      name: '¿Cuál es tu nombre?',
+      phone: '¿Cuál es tu teléfono de contacto?',
+      email: '¿Cuál es tu correo electrónico?',
+      submissionConfirmed: 'Confirma si deseas enviar la solicitud de capacitación.',
+    },
+    complaint: {
+      reason: 'Cuéntame qué ocurrió para registrar correctamente la queja.',
+      detailsConfirmed: 'Confirma si la descripción de la queja es correcta.',
+      name: '¿Cuál es tu nombre?',
+      city: '¿En qué ciudad ocurrió o recibiste el pedido?',
+      phone: '¿Cuál es tu teléfono de contacto?',
+      email: '¿Cuál es tu correo electrónico?',
+      submissionConfirmed: 'Confirma si deseas enviar la queja al equipo de servicio al cliente.',
+    },
+  }
+
+  return promptsByType[type]?.[field] || 'Comparte el dato pendiente para continuar.'
+}
+
+function buildChatbotQuantityEstimate(productName, dailySolutionLiters = 1) {
+  const product = findAssistantProduct(productName ?? '', productAssistantCatalog)
+  const dilutionText = Array.isArray(product?.dilution) ? product.dilution.join(' ') : product?.dilution
+  const dilutionMlPerLiter = parseDilutionMlPerLiter(dilutionText)
+  const presentations = (product?.presentations ?? [])
+    .map((label) => ({ label, milliliters: parsePresentationMilliliters(label) }))
+    .filter(({ milliliters }) => milliliters)
+    .sort((left, right) => left.milliliters - right.milliliters)
+
+  if (!product || !dilutionMlPerLiter || !presentations.length || !dailySolutionLiters) return null
+
+  const monthlyConcentrateMl = Math.ceil(dilutionMlPerLiter * dailySolutionLiters * 30)
+  const presentation = presentations.find(({ milliliters }) => milliliters >= monthlyConcentrateMl) ?? presentations.at(-1)
+  const units = Math.max(1, Math.ceil(monthlyConcentrateMl / presentation.milliliters))
+  const estimatedDays = Math.floor((presentation.milliliters * units) / (dilutionMlPerLiter * dailySolutionLiters))
+
+  return {
+    dailySolutionLiters,
+    dilutionMlPerLiter,
+    monthlyConcentrateMl,
+    presentation: presentation.label,
+    units,
+    estimatedDays,
+    quantity: `${units} ${units === 1 ? 'envase' : 'envases'} de ${presentation.label}`,
+  }
+}
+
+function getChatbotProductPresentations(productName) {
+  const product = findAssistantProduct(productName ?? '', productAssistantCatalog)
+  return product?.presentations?.filter(Boolean) ?? []
+}
+
+function getChatbotSectorRecommendation(sector) {
+  const rule = chatbotSectorRules.find(({ pattern }) => pattern.test(sector ?? ''))
+  if (!rule) return null
+
+  const products = (sectorProductNamesByTitle[rule.title] ?? [])
+    .map((productName) => productByName.get(productName))
+    .filter(Boolean)
+    .slice(0, 4)
+
+  return products.length ? { ...rule, products } : null
+}
+
+const chatbotSalesStopWords = new Set([
+  'para', 'como', 'quiero', 'necesito', 'producto', 'productos', 'limpiar', 'limpieza', 'usar', 'tengo',
+  'hacer', 'sobre', 'donde', 'cual', 'cuanto', 'ayuda', 'ayudar', 'naval', 'esta', 'este', 'estos', 'estas',
+])
+
+function buildChatbotCatalogContext(chatMessages) {
+  const customerText = chatMessages
+    .filter((chatMessage) => chatMessage.from === 'user' && chatMessage.text)
+    .slice(-6)
+    .map((chatMessage) => chatMessage.text)
+    .join(' ')
+  const normalizedCustomerText = normalizeAssistantText(customerText)
+  const searchTerms = Array.from(new Set(
+    normalizedCustomerText
+      .split(/\s+/)
+      .filter((term) => term.length >= 4 && !chatbotSalesStopWords.has(term)),
+  ))
+  const sector = extractChatbotConversationContactData(chatMessages).sector
+  const sectorProducts = new Set(getChatbotSectorRecommendation(sector)?.products.map((product) => product.name) ?? [])
+  const delicateSurface = [
+    'acero inoxidable',
+    'marmol',
+    'granito',
+    'madera',
+    'cuero',
+    'vinilo',
+    'aluminio',
+  ].find((surface) => normalizedCustomerText.includes(surface))
+
+  const rankedProducts = productAssistantCatalog
+    .map((product) => {
+      const searchableText = normalizeAssistantText([
+        product.name,
+        product.category,
+        product.summary,
+        product.b2bUse,
+        ...(product.surfaces ?? []),
+        ...(product.applications ?? []),
+      ].join(' '))
+      const searchableWords = new Set(searchableText.split(/\s+/))
+      const matchingTerms = searchTerms.filter((term) => searchableWords.has(term))
+      const aliasMatch = product.aliases.some((alias) => normalizedCustomerText.includes(alias))
+      const score = matchingTerms.length * 2 + (aliasMatch ? 10 : 0) + (sectorProducts.has(product.name) ? 6 : 0)
+      const compatibilityText = normalizeAssistantText([
+        product.summary,
+        ...(product.surfaces ?? []),
+      ].join(' '))
+      const hasExplicitDelicateSurface = !delicateSurface || compatibilityText.includes(delicateSurface)
+      return { product, score, hasExplicitDelicateSurface }
+    })
+    .filter(({ score, hasExplicitDelicateSurface }) => score > 0 && hasExplicitDelicateSurface)
+    .sort((left, right) => right.score - left.score)
+    .slice(0, 7)
+    .map(({ product }) => product)
+
+  const fallbackNames = [
+    'Detergente Limpiador Multiusos',
+    'Limpiador Desinfectante',
+    'Desengrasante',
+    'Detergente Multicocina',
+    'Limpia Vidrios',
+    'Cera Polimérica',
+  ]
+  const relevantProducts = rankedProducts.length
+    ? rankedProducts
+    : delicateSurface
+      ? []
+      : fallbackNames.map((name) => productAssistantCatalog.find((product) => product.name === name)).filter(Boolean)
+
+  const productContext = relevantProducts.map((product) => {
+    const dilution = (Array.isArray(product.dilution) ? product.dilution : [product.dilution]).filter(Boolean).join(' | ')
+    return [
+      `Producto: ${product.name}`,
+      product.summary && `Uso publicado: ${product.summary}`,
+      product.surfaces?.length && `Superficies: ${product.surfaces.join(', ')}`,
+      product.applications?.length && `Aplicaciones: ${product.applications.join(', ')}`,
+      product.presentations?.length && `Presentaciones: ${product.presentations.join(', ')}`,
+      dilution && `Dosificación publicada: ${dilution}`,
+      dilution && /uso puro/i.test(dilution) && 'No hay rendimiento por m² publicado: no calcular cantidad desde el área ni inventar frecuencia de reaplicación.',
+    ].filter(Boolean).join(' | ')
+  })
+
+  return [
+    'CONTEXTO COMERCIAL INTERNO DE PRODUCTOS NAVAL',
+    'Usa únicamente los productos y datos publicados abajo. No menciones ni recomiendes productos externos.',
+    delicateSurface && `Superficie delicada detectada: ${delicateSurface}. La lista ya fue filtrada para incluir solo compatibilidades explícitas del catálogo.`,
+    ...productContext,
+    'Navegación disponible: catálogo /productos/todos; tienda /tienda; preguntas frecuentes /preguntas-frecuentes; capacitaciones /#lineas-capacitaciones; contacto /contacto.',
+  ].join('\n')
+}
+
+function updateChatbotWorkflow(workflow, message, chatMessages = []) {
+  const data = { ...workflow.data }
+  const extractedData = extractChatbotContactData(message)
+  const missingField = getChatbotWorkflowMissingField(workflow)
+  const normalizedMessage = normalizeAssistantText(message)
+  const isStarterMessage = chatbotWorkflowStarterPatterns[workflow.type]?.test(message) ?? false
+  const matchedProduct = findAssistantProduct(message, productAssistantCatalog)
+  const operationSize = extractOperationSize(message)
+  const usageFrequency = extractUsageFrequency(message)
+  const dailySolutionLiters = extractDailySolutionLiters(message)
+  const hadConfirmedQuantity = Boolean(data.quantityConfirmed)
+  const workflowSummaryRequested = asksForWorkflowSummary(message, workflow.type)
+  const trainingDate = workflow.type === 'training' ? extractTrainingDate(message) : ''
+  const trainingTime = workflow.type === 'training' ? extractTrainingTime(message) : ''
+  const correctedTopic = workflow.type === 'training'
+    ? extractChatbotField(message, [/\b(?:tema|capacitaci[oó]n)\b\s*(?:(?:es|ser[ií]a|sobre|:)\s+)([\s\S]+)/i])
+    : ''
+  const correctedComplaint = workflow.type === 'complaint' && missingField === 'detailsConfirmed'
+    ? cleanChatbotFieldValue(message.replace(/^\s*(?:no[,.:;]?\s*)?(?:en\s+realidad|corrige|correcci[oó]n|lo\s+que\s+ocurri[oó]\s+fue)?\s*/i, ''))
+    : ''
+  let validationError = ''
+
+  if (data.city && !isValidCityAnswer(data.city)) delete data.city
+  if (data.address && !isValidAddressAnswer(data.address)) delete data.address
+  if (data.quantity && !hasProductPackageQuantity(data.quantity) && extractOperationSize(data.quantity)) {
+    data.operationSize = data.operationSize || extractOperationSize(data.quantity)
+    data.usageFrequency = data.usageFrequency || extractUsageFrequency(data.quantity)
+    data.needsQuantityHelp = true
+    delete data.quantity
+    delete data.quantityConfirmed
+  }
+
+  Object.entries(extractedData).forEach(([field, value]) => {
+    if (!value || ['product', 'quantity', 'city', 'address'].includes(field)) return
+    data[field] = value
+  })
+
+  if (workflow.type === 'quote' && missingField === 'product' && refersToRecentProductSet(message)) {
+    const recentProducts = getRecentChatbotProducts(chatMessages)
+    if (recentProducts.length > 1) {
+      data.products = recentProducts.map((product) => product.name)
+      data.product = data.products.join(', ')
+      delete data.selectionConfirmed
+      delete data.orderConfirmed
+      delete data.submissionConfirmed
+    }
+  }
+  if (workflow.type === 'quote' && matchedProduct && !data.products?.length) {
+    data.product = matchedProduct.name
+    data.products = [matchedProduct.name]
+    delete data.orderConfirmed
+    delete data.submissionConfirmed
+  }
+  if (workflow.type === 'quote' && !matchedProduct && isGenericProductReference(message)) {
+    const recentProduct = getRecentSingleChatbotProduct(chatMessages)
+    if (recentProduct) data.product = recentProduct.name
+    else validationError = 'ambiguousProduct'
+  }
+  if (workflow.type === 'training' && matchedProduct && !isStarterMessage) data.product = matchedProduct.name
+  if (workflow.type === 'training' && correctedTopic && !isStarterMessage && !workflowSummaryRequested) data.topics = correctedTopic
+  if (workflow.type === 'complaint' && matchedProduct && !isStarterMessage) data.product = matchedProduct.name
+  if (workflow.type === 'complaint' && correctedComplaint.length >= 8 && !isAffirmativeAnswer(message) && !workflowSummaryRequested) {
+    data.reason = correctedComplaint
+  }
+  if (workflow.type === 'training' && trainingDate && (missingField === 'preferredDate' || /\bfecha\b/i.test(message))) {
+    data.preferredDate = trainingDate
+  }
+  if (workflow.type === 'training' && trainingTime && (missingField === 'preferredTime' || /\b(?:hora|horario)\b/i.test(message))) {
+    data.preferredTime = trainingTime
+  }
+
+  if (workflow.type === 'quote' && operationSize) data.operationSize = operationSize
+  if (workflow.type === 'quote' && usageFrequency) data.usageFrequency = usageFrequency
+
+  if (workflow.type === 'quote' && (wantsChatbotQuantityEstimate(message) || operationSize || usageFrequency) && !hasProductPackageQuantity(message)) {
+    data.needsQuantityHelp = true
+    if ((missingField === 'city' || missingField === 'address') && !hadConfirmedQuantity) {
+      delete data.quantity
+      delete data.quantityConfirmed
+    }
+  }
+
+  if (workflow.type === 'quote' && data.needsQuantityHelp && dailySolutionLiters) {
+    data.solutionVolume = `${dailySolutionLiters} L de solución preparada al día`
+    data.dailySolutionLiters = dailySolutionLiters
+    data.solutionVolumeAssumed = false
+    delete data.quantity
+    delete data.quantityConfirmed
+  } else if (workflow.type === 'quote' && missingField === 'solutionVolume' && wantsChatbotQuantityEstimate(message)) {
+    data.solutionVolume = '1 L de solución preparada al día (supuesto inicial)'
+    data.dailySolutionLiters = 1
+    data.solutionVolumeAssumed = true
+  }
+
+  const attendeesMatch = message.match(/\b(\d+\s*(?:personas?|participantes?|asistentes?))\b/i)
+  if (attendeesMatch) data.attendees = attendeesMatch[1]
+
+  const orderMatch = message.match(/\b(?:pedido|factura|orden)\s*(?:n[uú]mero|nro\.?|#|:)?\s*([a-z0-9-]{3,})\b/i)
+  if (orderMatch) data.orderNumber = orderMatch[1]
+
+  const directAnswer = cleanChatbotFieldValue(message.replace(/^[📋🎓📦🧭🚚⚠️👤]\s*/u, ''))
+  const canUseDirectAnswer = !isStarterMessage && !workflowSummaryRequested && directAnswer && normalizedMessage.split(/\s+/).length <= 40
+
+  if (canUseDirectAnswer && missingField) {
+    if (missingField === 'product' && !data.product && !extractedData.sector && !isGenericProductReference(message)) data.product = matchedProduct?.name || directAnswer
+    if (missingField === 'quantity' && !data.quantity && !data.needsQuantityHelp && hasProductPackageQuantity(message)) {
+      data.quantity = formatQuoteQuantity(message, getQuoteProductNames(data).length)
+      delete data.orderConfirmed
+      delete data.submissionConfirmed
+    }
+    if (missingField === 'operationSize' && !data.operationSize && operationSize) data.operationSize = operationSize
+    if (missingField === 'usageFrequency' && !data.usageFrequency && usageFrequency) data.usageFrequency = usageFrequency
+    if (missingField === 'city' && !data.city) {
+      if (isValidCityAnswer(message)) data.city = extractedData.city || directAnswer
+      else validationError = wantsChatbotQuantityEstimate(message) ? 'cityQuantityMismatch' : 'city'
+    }
+    if (missingField === 'address' && !data.address) {
+      if (isValidAddressAnswer(message)) data.address = extractedData.address || directAnswer
+      else validationError = 'address'
+    }
+    if (missingField === 'name' && !data.name) data.name = directAnswer
+    if (missingField === 'phone' && !data.phone) {
+      if (/\d{7,}/.test(message.replace(/\D/g, ''))) data.phone = directAnswer
+      else validationError = 'phone'
+    }
+    if (missingField === 'email' && !data.email) {
+      if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(message.trim())) data.email = directAnswer
+      else validationError = 'email'
+    }
+    if (missingField === 'company' && !data.company) data.company = directAnswer
+    if (missingField === 'attendees' && !data.attendees) {
+      if (isValidAttendeeAnswer(message)) data.attendees = attendeesMatch?.[1] || directAnswer
+      else validationError = 'attendees'
+    }
+    if (missingField === 'topics' && !data.topics) data.topics = directAnswer
+    if (missingField === 'reason' && !data.reason) data.reason = directAnswer
+    if (missingField === 'preferredDate' && !data.preferredDate) {
+      if (trainingDate) data.preferredDate = trainingDate
+      else validationError = 'preferredDate'
+    }
+    if (missingField === 'preferredTime' && !data.preferredTime) {
+      if (trainingTime) data.preferredTime = trainingTime
+      else validationError = 'preferredTime'
+    }
+    if (missingField === 'detailsConfirmed' && isAffirmativeAnswer(message)) data.detailsConfirmed = 'Sí'
+    if (missingField === 'selectionConfirmed' && isAffirmativeAnswer(message)) data.selectionConfirmed = 'Sí'
+    if (missingField === 'selectionConfirmed' && hasProductPackageQuantity(message)) {
+      data.selectionConfirmed = 'Sí (confirmación implícita al indicar cantidades)'
+      data.quantity = formatQuoteQuantity(message, getQuoteProductNames(data).length)
+      delete data.orderConfirmed
+      delete data.submissionConfirmed
+    }
+    if (missingField === 'quantityConfirmed' && isAffirmativeAnswer(message)) {
+      data.quantityConfirmed = 'Sí'
+      data.orderConfirmed = 'Sí'
+    }
+    if (missingField === 'orderConfirmed' && isAffirmativeAnswer(message)) data.orderConfirmed = 'Sí'
+    if (missingField === 'submissionConfirmed' && isAffirmativeAnswer(message)) data.submissionConfirmed = 'Sí'
+    if (missingField === 'contact' && !data.phone && !data.email) {
+      if (/@/.test(message)) data.email = directAnswer
+      else if (/\d{7,}/.test(message.replace(/\D/g, ''))) data.phone = directAnswer
+    }
+  }
+
+  if (workflow.type === 'quote' && !data.needsQuantityHelp && missingField === 'quantity' && directAnswer && !hasProductPackageQuantity(message)) {
+    validationError = validationError || 'quantity'
+  }
+
+  if (workflow.type === 'quote' && data.needsQuantityHelp && data.operationSize && data.usageFrequency && data.solutionVolume && !data.quantity) {
+    const estimate = buildChatbotQuantityEstimate(data.product, data.dailySolutionLiters || 1)
+    if (estimate) {
+      data.quantityEstimate = estimate
+      data.quantity = `${estimate.quantity} (estimación inicial)`
+    }
+  }
+
+  if (workflow.type === 'quote' && missingField === 'quantityConfirmed' && !isAffirmativeAnswer(message) && !dailySolutionLiters) {
+    validationError = 'quantityConfirmation'
+  }
+
+  if (workflow.type === 'quote' && ['selectionConfirmed', 'orderConfirmed', 'submissionConfirmed'].includes(missingField) && !data[missingField] && !isAffirmativeAnswer(message)) {
+    validationError = `${missingField}Required`
+  }
+
+  if (workflow.type !== 'quote' && ['detailsConfirmed', 'submissionConfirmed'].includes(missingField) && !data[missingField] && !isAffirmativeAnswer(message)) {
+    validationError = `${missingField}Required`
+  }
+
+  if (workflowSummaryRequested) validationError = 'workflowSummary'
+
+  return { ...workflow, data, validationError }
+}
+
+function getChatbotWorkflowResponse(workflow) {
+  const missingField = getChatbotWorkflowMissingField(workflow)
+  const { data, type, validationError } = workflow
+
+  if (!missingField) return null
+
+  if (validationError === 'workflowSummary') {
+    return `${buildWorkflowSummary(workflow, { includeContact: true })}\n\nDato pendiente: ${getWorkflowPendingPrompt(type, missingField)}`
+  }
+  if (validationError === 'city') return 'Todavía no pude reconocer la ciudad y no avanzaré hasta confirmarla. ¿En qué ciudad necesitas continuar la solicitud?'
+  if (validationError === 'address') return 'Todavía no tengo una dirección válida. Escríbela con tipo de vía y número, por ejemplo: Carrera 20 # 10-30.'
+  if (validationError === 'phone') return 'Ese dato no parece un teléfono. Compárteme un número de contacto de al menos 7 dígitos.'
+  if (validationError === 'email') return 'Ese dato no parece un correo completo. Escríbelo en un formato como nombre@empresa.com.'
+  if (validationError === 'attendees') return 'Necesito una cantidad aproximada de asistentes, por ejemplo: “20 personas”.'
+  if (validationError === 'preferredDate') return 'No pude reconocer una fecha. Puedes responder, por ejemplo: “15 de octubre”, “20/10/2026” o “el próximo martes”.'
+  if (validationError === 'preferredTime') return 'No pude reconocer el horario. Puedes responder, por ejemplo: “9:00 a. m.”, “2:30 p. m.” o “en la mañana”.'
+
+  if (type === 'quote') {
+    if (validationError === 'ambiguousProduct') return 'Quiero continuar con el producto correcto, pero mencionamos más de una opción. ¿Cuál producto deseas comprar?'
+    if (validationError === 'quantity') return 'Ese dato describe tu operación, pero no una cantidad de compra. Puedo estimarla contigo: dime cuántas mesas, metros cuadrados u otras unidades atiendes y con qué frecuencia.'
+    if (validationError === 'cityQuantityMismatch') return 'La cantidad ya quedó orientada con la estimación anterior. Esa respuesta no corresponde al dato pendiente y no la guardaré como ciudad. ¿En qué ciudad necesitas la entrega?'
+    if (validationError === 'quantityConfirmation') return 'Antes de continuar necesito confirmar la estimación. Puedes responder “sí, me sirve” o indicarme cuántos litros de solución preparan al día para recalcularla.'
+    if (validationError === 'selectionConfirmedRequired') return 'Necesito confirmar primero la selección de productos. Responde “sí” para incluirlos todos o dime cuál deseas retirar.'
+    if (validationError === 'orderConfirmedRequired') return 'Antes de pedir los datos de entrega necesito confirmar productos y cantidades. Responde “sí” si el resumen es correcto o indícame qué deseas cambiar.'
+    if (validationError === 'submissionConfirmedRequired') return 'La solicitud todavía no se ha enviado. Responde “sí, enviar” para confirmarla o indícame qué dato deseas corregir.'
+    if (missingField === 'product') {
+      const recommendation = getChatbotSectorRecommendation(data.sector)
+      if (recommendation) {
+        return `Para ${recommendation.label}, normalmente se consideran estas soluciones:\n\n${recommendation.products.map((product) => `• ${product.name}`).join('\n')}\n\n¿Cuál deseas cotizar? También puedes indicarme otra necesidad.`
+      }
+      return 'Con gusto preparo la cotización. ¿Qué producto necesitas o qué tipo de espacio deseas atender?'
+    }
+    if (missingField === 'selectionConfirmed') {
+      return `${buildQuoteOrderSummary(data)}\n\n¿Confirmas que deseas incluir estos ${getQuoteProductNames(data).length} productos en la cotización?`
+    }
+    if (missingField === 'quantity') {
+      if (getQuoteProductNames(data).length > 1) {
+        return `${buildQuoteOrderSummary(data)}\n\nIndícame la cantidad para cada producto. Puedes responder, por ejemplo, “10 galones de cada uno” o especificar una cantidad diferente por producto.`
+      }
+      const presentations = getChatbotProductPresentations(data.product)
+      const presentationText = presentations.length
+        ? `\n\nPresentaciones publicadas:\n${presentations.map((presentation) => `• ${presentation}`).join('\n')}`
+        : ''
+      return `Perfecto, cotizaremos ${data.product}.${presentationText}\n\n¿Qué cantidad y presentación necesitas? Si no lo sabes, dime “ayúdame a estimar” y te guío.`
+    }
+    if (missingField === 'operationSize') return 'Claro. Para orientarte sin inventar una cantidad, cuéntame el tamaño de tu operación: por ejemplo, metros cuadrados, habitaciones, puestos, empleados o consumo actual.'
+    if (missingField === 'usageFrequency') return '¿Con qué frecuencia usarían el producto: diariamente, varias veces por semana o de forma ocasional? El equipo comercial validará contigo la cantidad final.'
+    if (missingField === 'solutionVolume') return `Ya tengo ${data.operationSize} y una frecuencia ${data.usageFrequency}. Para convertir la dosificación en una cantidad de compra, ¿cuántos litros de solución preparada usarían al día? Si no lo sabes, responde “no sé” y calcularé un escenario inicial claramente identificado.`
+    if (missingField === 'quantityConfirmed' && data.quantityEstimate) {
+      const estimate = data.quantityEstimate
+      return `Estimación inicial para ${data.operationSize} con uso ${data.usageFrequency}\n\n• Dosificación publicada: ${estimate.dilutionMlPerLiter} ml por 1 L de agua.\n• Supuesto: ${estimate.dailySolutionLiters} L de solución preparada al día.\n• Consumo aproximado: ${estimate.monthlyConcentrateMl} ml de concentrado al mes.\n• Compra inicial sugerida: ${estimate.quantity}.\n• Duración aproximada bajo ese supuesto: ${estimate.estimatedDays} días.\n\nEl equipo comercial validará la cantidad final. ¿Te sirve esta estimación o preparan más de ${estimate.dailySolutionLiters} L al día?`
+    }
+    if (missingField === 'orderConfirmed') return `${buildQuoteOrderSummary(data)}\n\n¿Confirmas que estos productos y cantidades son correctos antes de continuar con los datos de entrega?`
+    if (missingField === 'city') return '¿En qué ciudad necesitas la entrega?'
+    if (missingField === 'address') return '¿Cuál es la dirección de entrega? La necesitamos para calcular el transporte.'
+    if (missingField === 'name') return '¿A nombre de quién preparamos la cotización?'
+    if (missingField === 'phone') return '¿Cuál es tu número de teléfono de contacto?'
+    if (missingField === 'email') return '¿A qué correo electrónico debemos enviar la cotización?'
+    if (missingField === 'submissionConfirmed') return `${buildQuoteOrderSummary(data, { includeContact: true })}\n\nEsta es la solicitud completa. ¿Confirmas que deseas enviarla al equipo comercial de Naval?`
+  }
+
+  if (type === 'complaint') {
+    if (validationError === 'detailsConfirmedRequired') return `${buildComplaintSummary(data)}\n\nAntes de continuar necesito confirmar que entendí correctamente la queja. Responde “sí” o indícame qué debo corregir.`
+    if (validationError === 'submissionConfirmedRequired') return `${buildComplaintSummary(data, { includeContact: true })}\n\nLa queja todavía no se ha enviado. Responde “sí, enviar” para confirmarla o indícame qué dato deseas corregir.`
+    if (missingField === 'reason') return 'Quiero ayudarte a gestionar la queja. Cuéntame brevemente qué ocurrió.'
+    if (missingField === 'detailsConfirmed') return `${buildComplaintSummary(data)}\n\n¿Esta descripción representa correctamente lo ocurrido?`
+    if (missingField === 'name') return 'Gracias por explicarlo. ¿Cuál es tu nombre?'
+    if (missingField === 'city') return '¿En qué ciudad ocurrió o recibiste el pedido?'
+    if (missingField === 'phone') return '¿Cuál es tu teléfono de contacto?'
+    if (missingField === 'email') return '¿Cuál es tu correo electrónico para dar seguimiento al caso?'
+    if (missingField === 'submissionConfirmed') return `${buildComplaintSummary(data, { includeContact: true })}\n\nEsta es la queja completa. ¿Confirmas que deseas enviarla al equipo de servicio al cliente de Naval?`
+  }
+
+  if (type === 'training') {
+    if (validationError === 'detailsConfirmedRequired') return `${buildTrainingSummary(data)}\n\nAntes de continuar necesito confirmar los datos principales de la capacitación. Responde “sí” o indícame qué dato debemos corregir.`
+    if (validationError === 'submissionConfirmedRequired') return `${buildTrainingSummary(data, { includeContact: true })}\n\nLa capacitación todavía no se ha solicitado. Responde “sí, enviar” para confirmarla o indícame qué dato deseas corregir.`
+    if (missingField === 'topics') return 'Te ayudo a solicitar la capacitación. ¿Sobre qué producto o tema necesitan formación?'
+    if (missingField === 'company') return '¿Cuál es el nombre de la empresa?'
+    if (missingField === 'attendees') return '¿Cuántas personas asistirían aproximadamente?'
+    if (missingField === 'preferredDate') return '¿Qué fecha o rango de fechas prefieren? La disponibilidad se confirmará muy pronto.'
+    if (missingField === 'preferredTime') return '¿Qué horario o franja horaria prefieren?'
+    if (missingField === 'detailsConfirmed') return `${buildTrainingSummary(data)}\n\n¿Confirmas que el tema, la empresa, los participantes, la fecha y el horario son correctos?`
+    if (missingField === 'city') return '¿En qué ciudad se realizaría?'
+    if (missingField === 'address') return '¿Cuál es la dirección donde se realizaría la capacitación?'
+    if (missingField === 'name') return '¿Cuál es tu nombre?'
+    if (missingField === 'phone') return '¿Cuál es tu teléfono de contacto?'
+    if (missingField === 'email') return '¿Cuál es tu correo electrónico?'
+    if (missingField === 'submissionConfirmed') return `${buildTrainingSummary(data, { includeContact: true })}\n\nEsta es la solicitud completa. ¿Confirmas que deseas enviarla al equipo de Naval?`
+  }
+
+  return 'Cuéntame el dato pendiente para continuar.'
+}
+
+function buildChatbotWorkflowSubmission(workflow) {
+  const { data, type } = workflow
+  const lines = [
+    `Tipo de solicitud: ${chatbotRequestLabels[type]}.`,
+    `Prioridad: ${chatbotRequestPriorities[type] ?? 'NORMAL'}.`,
+  ]
+  if (data.requestId) lines.push(`ID de solicitud: ${data.requestId}`)
+  const fieldsByType = {
+    quote: [['Nombre', 'name'], ['Empresa', 'company'], ['Ciudad', 'city'], ['Dirección', 'address'], ['Teléfono', 'phone'], ['Correo', 'email'], ['Producto', 'product'], ['Cantidad y presentación', 'quantity'], ['Tamaño de la operación', 'operationSize'], ['Frecuencia de uso', 'usageFrequency'], ['Sector', 'sector']],
+    complaint: [['Nombre', 'name'], ['Empresa', 'company'], ['Ciudad', 'city'], ['Teléfono', 'phone'], ['Correo', 'email'], ['Pedido o factura', 'orderNumber'], ['Descripción de la queja', 'reason']],
+    training: [['Nombre', 'name'], ['Empresa', 'company'], ['Ciudad', 'city'], ['Dirección', 'address'], ['Teléfono', 'phone'], ['Correo', 'email'], ['Asistentes', 'attendees'], ['Tema', 'topics'], ['Fecha preferida', 'preferredDate'], ['Horario preferido', 'preferredTime']],
+  }
+
+  for (const [label, field] of fieldsByType[type] ?? []) {
+    if (data[field]) lines.push(`${label}: ${data[field]}`)
+  }
+
+  return lines.join('\n')
+}
+
+function wantsChatbotLinks(message) {
+  return /\b(?:ver|verlo|verla|mostrar|mu[eé]strame|abrir|ir\s+a|ll[eé]vame|enlace|link|p[aá]gina|ficha|descargar|navegar|buscar\s+en\s+el\s+sitio|(?:en\s+)?d[oó]nde|d[oó]nde\s+encuentro)\b/i.test(message)
+}
+
+function getProductInterestClarificationResponse(message, product) {
+  if (!product || !isAmbiguousProductInterest(message)) return null
+
+  return {
+    text: `Perfecto, te ayudo con ${product.name}.\n\n¿Quieres ver la información del producto o deseas comprarlo y preparar una cotización? También puedes preguntarme antes por sus usos, dosificación, presentaciones o forma de aplicación.`,
+    actions: [
+      { label: 'Ver producto', href: product.productUrl },
+      { label: 'Quiero comprarlo', message: `Quiero comprar ${product.name}` },
+    ],
+  }
+}
+
+function hideUnrequestedChatbotActions(response, message) {
+  if (!response?.actions?.length || wantsChatbotLinks(message) || response.actions.some((action) => action.message)) return response
+  const { actions, ...responseWithoutActions } = response
+  return responseWithoutActions
 }
 
 function hasChatbotHumanHandoffRequest(chatMessages) {
@@ -4947,9 +5704,179 @@ function buildChatbotWhatsappMessage(contactData) {
   return `Hola, quiero continuar mi conversación con un asesor de Naval por WhatsApp.\n\n${details}`
 }
 
+function buildChatbotWhatsappFallbackMessage(intent, chatMessages) {
+  const conversation = formatChatbotConversationText(chatMessages)
+  const label = chatbotRequestLabels[intent] ?? chatbotRequestLabels.question
+
+  return `Hola, necesito ayuda de Productos Naval.\nTipo de solicitud: ${label}.\n\n${conversation}`.slice(0, 3500)
+}
+
+function getChatbotRecoveryResponse(intent, chatMessages) {
+  const contactData = extractChatbotConversationContactData(chatMessages)
+  const mentionedProduct = [...chatMessages]
+    .reverse()
+    .filter((chatMessage) => chatMessage.from === 'user')
+    .map((chatMessage) => findAssistantProduct(chatMessage.text ?? '', productAssistantCatalog))
+    .find(Boolean)
+
+  if (intent === 'quote') {
+    const requestedProduct = mentionedProduct?.name || contactData.product
+    if (!requestedProduct && !contactData.sector) return 'Con gusto te ayudo a cotizar. Cuéntame qué producto necesitas o qué tipo de empresa o área deseas atender.'
+    if (!requestedProduct) return `Perfecto, te ayudaré con soluciones para ${contactData.sector}. ¿Qué productos o necesidades específicas quieres incluir en la cotización?`
+    if (!contactData.quantity) return `Perfecto, tengo el producto: ${requestedProduct}. ¿Qué cantidad y presentación necesitas?`
+    if (!contactData.city) return '¿En qué ciudad necesitas la entrega?'
+    if (!contactData.phone && !contactData.email) return 'Compárteme un teléfono o correo para que el equipo comercial pueda enviarte la cotización.'
+    return 'Ya tengo la información principal. Enviaré la solicitud al equipo comercial para que prepare la cotización y te responda por el teléfono o correo indicado.'
+  }
+
+  if (intent === 'training') {
+    return 'Para solicitar una capacitación, compárteme:\n\n• Empresa\n• Ciudad\n• Número aproximado de participantes\n• Temas de interés\n• Teléfono o correo de contacto'
+  }
+
+  if (intent === 'complaint') {
+    return 'Quiero ayudarte con el caso. Compárteme:\n\n• Qué ocurrió\n• Número de pedido o factura, si lo tienes\n• Ciudad\n• Teléfono o correo de contacto'
+  }
+
+  if (intent === 'human') {
+    const missingFields = [
+      !contactData.name && 'nombre',
+      !contactData.city && 'ciudad',
+      !contactData.phone && 'teléfono',
+      !contactData.email && 'correo',
+      !contactData.reason && 'motivo de contacto',
+    ].filter(Boolean)
+
+    return missingFields.length
+      ? `Para conectarte con un asesor, compárteme: ${missingFields.join(', ')}.`
+      : 'Gracias. Puedes continuar ahora por WhatsApp con los datos de esta conversación.'
+  }
+
+  return 'Para orientarte bien, dime qué espacio o superficie deseas limpiar y cuál es el problema principal: grasa, sarro, malos olores, desinfección, lavado diario u otro. Te recomendaré opciones y te haré una sola pregunta a la vez.'
+}
+
+function getLocalChatbotResponse(message, intent, chatMessages = []) {
+  const normalizedMessage = normalizeAssistantText(message)
+  const conversationContactData = extractChatbotConversationContactData(chatMessages)
+  const normalizedCustomerConversation = normalizeAssistantText(
+    chatMessages
+      .filter((chatMessage) => chatMessage.from === 'user' && chatMessage.text)
+      .map((chatMessage) => chatMessage.text)
+      .join(' '),
+  )
+
+  if (intent === 'human') {
+    const whatsappMessage = buildChatbotWhatsappFallbackMessage(intent, chatMessages)
+    return {
+      text: 'Claro. Puedes hablar directamente con un asesor de Productos Naval por WhatsApp en el +57 320 342 8815.',
+      whatsappUrl: `${whatsappHref}?text=${encodeURIComponent(whatsappMessage)}`,
+    }
+  }
+
+  if (intent === 'training' && mentionsChatbotTraining(message)) {
+    return {
+      text: 'Capacitaciones Naval\n\nIncluyen:\n• Selección y uso de productos\n• Dosificación y aplicación segura\n• Almacenamiento y EPP\n• Protocolos de limpieza\n\nPara solicitarla, indícame empresa, ciudad, participantes, temas de interés y un teléfono o correo.',
+      actions: [{ label: 'Ver capacitaciones', href: '/#lineas-capacitaciones' }],
+    }
+  }
+
+  const currentMessageContactData = extractChatbotContactData(message)
+  const conversationSectorRule = chatbotSectorRules.find(({ pattern }) => pattern.test(conversationContactData.sector ?? ''))
+
+  if (intent === 'question' && conversationSectorRule?.title === 'Gym' && /\b(?:zonas? comunes?|areas? comunes?|pisos?)\b/.test(normalizedMessage)) {
+    return {
+      text: 'Para las zonas comunes del gimnasio, te recomiendo comenzar con estas dos opciones:\n\n• Limpiador Desinfectante: para pisos y superficies lavables cuando necesitas limpieza con desinfección.\n• Detergente Limpiador Multiusos: para el mantenimiento diario de pisos, paredes, mesones y escaleras.\n\n¿Tu prioridad es desinfectar superficies de contacto o realizar la limpieza diaria general?',
+    }
+  }
+
+  if (intent === 'question' && normalizedCustomerConversation.includes('marmol')) {
+    if (/\b(?:m2|metros cuadrados|area|superficie)\b/.test(normalizedMessage) && /\b\d+\b/.test(normalizedMessage)) {
+      const ceraPolimerica = productByName.get('Cera Polimérica')
+      const presentations = getProductPresentations(ceraPolimerica).filter(Boolean)
+      return {
+        text: `Para ${message.match(/\b\d+[\d.,]*\s*(?:m2|metros cuadrados)?/i)?.[0] || 'esa área'}, la opción Naval publicada para proteger y dar brillo al mármol sellado es Cera Polimérica.\n\nPresentaciones publicadas:\n${presentations.map((presentation) => `• ${presentation}`).join('\n')}\n\nSe usa pura, pero el catálogo no publica rendimiento por m²; por eso no sería responsable inventar una cantidad. ¿Cuánta cera consumen actualmente por aplicación? Si aún no lo saben, puedes decir “quiero cotizar Cera Polimérica” y la cantidad quedará para validación comercial.`,
+      }
+    }
+
+    if (/\b(?:sellado|sellada|diaria|diario|brillo|proteger|proteccion)\b/.test(normalizedMessage)) {
+      return {
+        text: 'Para mármol sellado, Cera Polimérica es la opción Naval publicada cuando buscas protección y brillo. El catálogo no declara un limpiador diario específico para mármol, así que no te recomendaré otro producto sin validar su compatibilidad.\n\n¿Quieres proteger y recuperar el brillo con Cera Polimérica, o buscas únicamente retirar la suciedad diaria?',
+      }
+    }
+  }
+
+  if (['question', 'quote'].includes(intent) && currentMessageContactData.sector) {
+    const sectorRule = chatbotSectorRules.find(({ pattern }) => pattern.test(currentMessageContactData.sector))
+    const recommendedProducts = (sectorProductNamesByTitle[sectorRule?.title] ?? [])
+      .slice(0, 5)
+      .map((productName) => productByName.get(productName))
+      .filter(Boolean)
+
+    if (sectorRule && recommendedProducts.length && (intent === 'question' || !conversationContactData.quantity)) {
+      const sectorAreaQuestion = {
+        Gym: '¿Qué área quieres atender primero: máquinas, pisos y zonas comunes, baños y vestieres, o control de olores?',
+        Restaurante: '¿Qué área quieres atender primero: cocina, comedor, baños o lavado de utensilios?',
+        Hotelero: '¿Qué área quieres atender primero: habitaciones, baños, lavandería o zonas comunes?',
+      }[sectorRule.title] || '¿Qué área de la operación quieres atender primero?'
+      const nextQuestion = intent === 'quote'
+        ? '¿Cuáles deseas incluir y en qué cantidades? Si aún no lo sabes, puedo ayudarte a estimarlo.'
+        : sectorAreaQuestion
+      return {
+        text: `Para ${sectorRule.label}, estas son buenas opciones para comenzar:\n\n${recommendedProducts.map((product) => `• ${product.name}`).join('\n')}\n\n${nextQuestion}`,
+        actions: recommendedProducts.slice(0, 3).map((product) => ({
+          label: `Ver ${product.name}`,
+          href: getPagePath(product.slug),
+        })),
+      }
+    }
+  }
+
+  if (/^(?:hola|buenos dias|buenas tardes|buenas noches|hey|buenas|saludos)[!. ]*$/.test(normalizedMessage)) {
+    return { text: '¡Hola! Soy el Asistente Naval. Cuéntame qué área necesitas limpiar, qué producto buscas o si deseas una cotización.' }
+  }
+
+  if (/\b(?:telefono|correo|email|whatsapp|contacto|donde estan|ubicacion)\b/.test(normalizedMessage) && intent === 'question') {
+    return {
+      text: 'Puedes contactar a Productos Naval por WhatsApp al +57 320 342 8815 o por correo a servicioalcliente@productosnaval.com.',
+      actions: [{ label: 'Ver contacto', href: '/contacto' }],
+    }
+  }
+
+  if (/\b(?:catalogo|portafolio|todos los productos|que venden|que productos tienen)\b/.test(normalizedMessage)) {
+    return {
+      text: 'El portafolio incluye soluciones para limpieza general, cocinas, pisos y superficies, lavandería, higiene y desinfección. Puedes ver el catálogo completo o decirme qué necesitas limpiar para recomendarte opciones.',
+      actions: [{ label: 'Ver catálogo', href: '/productos/todos' }],
+    }
+  }
+
+  const pageNavigationRules = [
+    { pattern: /\b(?:quienes son|quienes somos|conocer naval|sobre naval|empresa naval)\b/, text: 'Aquí puedes conocer la historia, experiencia y enfoque de Productos Naval.', actions: [{ label: 'Ir a quiénes somos', href: '/' }] },
+    { pattern: /\b(?:preguntas frecuentes|faq|dudas frecuentes)\b/, text: 'Aquí encuentras respuestas rápidas sobre productos, compras, asesoría y operación.', actions: [{ label: 'Ver preguntas frecuentes', href: '/preguntas-frecuentes' }] },
+    { pattern: /\b(?:tienda|carrito|hacer pedido|armar pedido)\b/, text: 'Puedes preparar tu solicitud desde la tienda y enviarla para cotización.', actions: [{ label: 'Ir a la tienda', href: '/tienda' }] },
+    { pattern: /\b(?:guias|blog|articulos|consejos de limpieza)\b/, text: 'Puedes consultar las guías de Naval para elegir y usar soluciones de limpieza.', actions: [{ label: 'Ver guías', href: '/guias' }] },
+    { pattern: /\b(?:contacto|contactenos|pagina de contacto)\b/, text: 'Aquí encuentras los canales de atención comercial de Productos Naval.', actions: [{ label: 'Ir a contacto', href: '/contacto' }] },
+    { pattern: /\b(?:capacitaciones|formacion tecnica|seguridad quimica)\b/, text: 'La sección de capacitaciones explica los temas, beneficios y forma de solicitar formación para tu equipo.', actions: [{ label: 'Ver capacitaciones', href: '/#lineas-capacitaciones' }] },
+  ]
+  const pageNavigation = pageNavigationRules.find(({ pattern }) => pattern.test(normalizedMessage))
+  if (pageNavigation) return { text: pageNavigation.text, actions: pageNavigation.actions }
+
+  if (/\b(?:buscar en el sitio|navegar|navegacion|menu|paginas|a donde puedo ir|ayuda para encontrar)\b/.test(normalizedMessage)) {
+    return {
+      text: 'Puedo llevarte directamente a la sección que necesitas. Elige una opción o dime el nombre de un producto, documento o tema.',
+      actions: [
+        { label: 'Productos', href: '/productos/todos' },
+        { label: 'Tienda', href: '/tienda' },
+        { label: 'Capacitaciones', href: '/#lineas-capacitaciones' },
+        { label: 'Preguntas frecuentes', href: '/preguntas-frecuentes' },
+        { label: 'Contacto', href: '/contacto' },
+      ],
+    }
+  }
+
+  return null
+}
+
 function buildChatbotWebhookPayload(message, requestType, submittedAt) {
   const contactData = extractChatbotContactData(message)
-  const isCompleteQuote = requestType === 'quote' && Boolean(contactData.product && (contactData.email || contactData.phone))
 
   return {
     source: 'productos-naval-chatbot',
@@ -4964,11 +5891,24 @@ function buildChatbotWebhookPayload(message, requestType, submittedAt) {
     product: contactData.product,
     quantity: contactData.quantity,
     reason: contactData.reason,
+    sector: contactData.sector,
     requestType,
     requestLabel: chatbotRequestLabels[requestType] ?? chatbotRequestLabels.question,
+    priority: chatbotRequestPriorities[requestType] ?? 'NORMAL',
     handoff: requestType === 'human',
     recommendedChannel: 'crm',
   }
+}
+
+function createChatbotRequestId(requestType) {
+  const prefix = {
+    quote: 'COT',
+    complaint: 'QUE',
+    training: 'CAP',
+  }[requestType] ?? 'SOL'
+  const datePart = new Date().toISOString().slice(0, 10).replaceAll('-', '')
+  const randomPart = window.crypto?.randomUUID?.().slice(0, 8).toUpperCase() ?? Math.random().toString(36).slice(2, 10).toUpperCase()
+  return `NAV-${prefix}-${datePart}-${randomPart}`
 }
 
 function normalizeChatbotReplyText(text) {
@@ -5127,11 +6067,91 @@ function getInitialChatbotMessages() {
     {
       from: 'bot',
       text:
-        'Hola, soy el Asistente Naval.\n\n' +
-        'Te ayudo a encontrar productos, consultar usos y diluciones, acceder a fichas técnicas o de seguridad y gestionar cotizaciones, capacitaciones o atención comercial.\n\n' +
-        '¿Cómo puedo ayudarte hoy?',
+        'Hola, soy tu Asistente Naval.\n\n' +
+        'Te ayudo a elegir productos del catálogo, comparar opciones y estimar presentaciones o cantidades según tu espacio y frecuencia de uso. También puedo gestionar cotizaciones, capacitaciones, quejas, fichas y navegación por la página.\n\n' +
+        'Cuéntame qué necesitas limpiar o qué problema quieres resolver.',
     },
   ]
+}
+
+function getStoredChatbotState() {
+  if (typeof window === 'undefined') return null
+
+  try {
+    const storedState = JSON.parse(window.localStorage.getItem(chatbotConversationStorageKey) || 'null')
+    const savedAt = Number(storedState?.savedAt)
+    const isExpired = !Number.isFinite(savedAt) || Date.now() - savedAt > chatbotSessionInactivityLimit
+    if (isExpired || !Array.isArray(storedState?.messages)) return null
+
+    const messages = storedState.messages
+      .filter((chatMessage) => ['user', 'bot'].includes(chatMessage?.from) && typeof chatMessage?.text === 'string')
+      .slice(-60)
+
+    const firstCustomerMessage = messages.find((chatMessage) => chatMessage.from === 'user')?.text ?? ''
+    const hasTrainingRequest = messages.some((chatMessage) =>
+      chatMessage.from === 'user' && chatbotWorkflowStarterPatterns.training.test(chatMessage.text),
+    )
+    const activeWorkflow = storedState.activeWorkflow?.type === 'training' &&
+      isDeliveryInformationRequest(firstCustomerMessage) && !hasTrainingRequest
+      ? null
+      : storedState.activeWorkflow ?? null
+
+    return messages.length
+      ? { messages, activeWorkflow, deliveryInquiry: storedState.deliveryInquiry ?? null }
+      : null
+  } catch {
+    return null
+  }
+}
+
+function ChatbotMessageContent({ text }) {
+  const lines = extractChatbotReply(text).split('\n')
+  const blocks = []
+  let listItems = []
+
+  const flushList = () => {
+    if (!listItems.length) return
+    blocks.push({ type: 'list', items: listItems })
+    listItems = []
+  }
+
+  lines.forEach((rawLine) => {
+    const line = rawLine.trim()
+    if (!line) {
+      flushList()
+      return
+    }
+
+    const bulletMatch = line.match(/^[•*-]\s+(.+)/)
+    if (bulletMatch) {
+      listItems.push(bulletMatch[1])
+      return
+    }
+
+    flushList()
+    blocks.push({
+      type: /^(?:dosificaci[oó]n|importante|incluye|incluyen|capacitaciones naval|para solicitar|datos necesarios)\b|:$/.test(line.toLowerCase()) ? 'heading' : 'paragraph',
+      text: line,
+    })
+  })
+  flushList()
+
+  return (
+    <div className="floating-chatbot__message-content">
+      {blocks.map((block, index) => {
+        if (block.type === 'list') {
+          return (
+            <ul key={`list-${index}`}>
+              {block.items.map((item, itemIndex) => <li key={`${item}-${itemIndex}`}>{item}</li>)}
+            </ul>
+          )
+        }
+
+        if (block.type === 'heading') return <strong key={`heading-${index}`}>{block.text}</strong>
+        return <p key={`paragraph-${index}`}>{block.text}</p>
+      })}
+    </div>
+  )
 }
 
 function createChatbotSessionId() {
@@ -5179,13 +6199,16 @@ function getChatbotSessionId() {
   }
 }
 
-async function sendToMake(message, { signal, conversation = [] } = {}) {
-  const intent = getChatbotIntent(message)
+async function sendToMake(message, { signal, conversation = [], intent = getChatbotIntent(message), offlineReply = '', workflowData = {} } = {}) {
   const conversationContactData = extractChatbotConversationContactData(conversation)
-  const shouldOfferWhatsapp =
+  const webhookPayload = buildChatbotWebhookPayload(message, intent, new Date().toISOString())
+  const hasCompleteHandoff =
     hasChatbotHumanHandoffRequest(conversation) && isChatbotHandoffInformationComplete(conversationContactData)
+  const shouldOfferWhatsapp = intent === 'human' && hasChatbotHumanHandoffRequest(conversation)
   const whatsappMessage = buildChatbotWhatsappMessage(conversationContactData)
   const webhookUrl = makeWebhookEndpoint
+  const catalogContext = buildChatbotCatalogContext(conversation)
+  const conversationText = `${formatChatbotConversationText(conversation)}\n\n${catalogContext}`
 
   const response = await fetch(webhookUrl, {
     method: 'POST',
@@ -5195,9 +6218,28 @@ async function sendToMake(message, { signal, conversation = [] } = {}) {
     signal,
     body: JSON.stringify({
       sessionId: getChatbotSessionId(),
-      ...buildChatbotWebhookPayload(message, intent, new Date().toISOString()),
+      ...webhookPayload,
+      requestId: workflowData.requestId || createChatbotRequestId(intent),
+      name: workflowData.name || webhookPayload.name || conversationContactData.name,
+      company: workflowData.company || webhookPayload.company || conversationContactData.company,
+      city: workflowData.city || webhookPayload.city || conversationContactData.city,
+      address: workflowData.address || webhookPayload.address || conversationContactData.address,
+      phone: workflowData.phone || webhookPayload.phone || conversationContactData.phone,
+      email: workflowData.email || webhookPayload.email || conversationContactData.email,
+      product: workflowData.product || webhookPayload.product || conversationContactData.product,
+      quantity: workflowData.quantity || webhookPayload.quantity || conversationContactData.quantity,
+      reason: workflowData.reason || webhookPayload.reason || conversationContactData.reason,
+      sector: workflowData.sector || webhookPayload.sector || conversationContactData.sector,
+      attendees: workflowData.attendees || '',
+      trainingTopic: workflowData.topics || '',
+      preferredDate: workflowData.preferredDate || '',
+      preferredTime: workflowData.preferredTime || '',
+      orderNumber: workflowData.orderNumber || '',
+      operationSize: workflowData.operationSize || '',
+      usageFrequency: workflowData.usageFrequency || '',
       messages: formatChatbotMessagesForWebhook(conversation),
-      conversationText: formatChatbotConversationText(conversation),
+      conversationText,
+      catalogContext,
       fallbackMessages: shouldOfferWhatsapp
         ? {
             whatsapp: whatsappMessage,
@@ -5231,20 +6273,35 @@ async function sendToMake(message, { signal, conversation = [] } = {}) {
     throw new Error('Respuesta inválida')
   }
 
+  const fallbackWhatsappMessage = buildChatbotWhatsappFallbackMessage(intent, conversation)
+  const replyText = data.delivered === false && offlineReply
+    ? offlineReply
+    : data.delivered === false && ['quote', 'complaint', 'training'].includes(intent)
+      ? getChatbotRecoveryResponse(intent, conversation)
+      : reply.trim()
+
   return {
-    reply: reply.trim(),
-    whatsappUrl: shouldOfferWhatsapp ? `${whatsappHref}?text=${encodeURIComponent(whatsappMessage)}` : '',
+    reply: replyText,
+    whatsappUrl: shouldOfferWhatsapp
+      ? `${whatsappHref}?text=${encodeURIComponent(hasCompleteHandoff ? whatsappMessage : fallbackWhatsappMessage)}`
+      : '',
   }
 }
 
 function FloatingChatbot() {
+  const initialStoredChatbotStateRef = useRef(null)
+  if (initialStoredChatbotStateRef.current === null) {
+    initialStoredChatbotStateRef.current = getStoredChatbotState() || { messages: getInitialChatbotMessages(), activeWorkflow: null, deliveryInquiry: null }
+  }
   const [isOpen, setIsOpen] = useState(false)
   const [message, setMessage] = useState('')
   const [status, setStatus] = useState('idle')
   const messagesEndRef = useRef(null)
   const requestAbortControllerRef = useRef(null)
   const requestTimeoutRef = useRef(null)
-  const [chatMessages, setChatMessages] = useState(() => getInitialChatbotMessages())
+  const [chatMessages, setChatMessages] = useState(() => initialStoredChatbotStateRef.current.messages)
+  const [activeWorkflow, setActiveWorkflow] = useState(() => initialStoredChatbotStateRef.current.activeWorkflow)
+  const [deliveryInquiry, setDeliveryInquiry] = useState(() => initialStoredChatbotStateRef.current.deliveryInquiry)
   const hasUserMessages = chatMessages.some((chatMessage) => chatMessage.from === 'user')
   const submitChatbotMessageRef = useRef(null)
 
@@ -5259,6 +6316,8 @@ function FloatingChatbot() {
     requestAbortControllerRef.current = null
     resetChatbotSessionId()
     setChatMessages(getInitialChatbotMessages())
+    setActiveWorkflow(null)
+    setDeliveryInquiry(null)
     setMessage('')
     setStatus('idle')
 
@@ -5270,14 +6329,94 @@ function FloatingChatbot() {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth', block: 'end' })
   }, [chatMessages, isOpen])
 
+  useEffect(() => {
+    try {
+      const messages = chatMessages.filter((chatMessage) => !chatMessage.isWriting).slice(-60)
+      window.localStorage.setItem(chatbotConversationStorageKey, JSON.stringify({
+        savedAt: Date.now(),
+        messages,
+        activeWorkflow,
+        deliveryInquiry,
+      }))
+    } catch {
+      // La conversación sigue funcionando aunque el navegador bloquee el almacenamiento local.
+    }
+  }, [activeWorkflow, chatMessages, deliveryInquiry])
+
   const submitChatbotMessage = async (forcedMessage) => {
     const text = (forcedMessage ?? message).trim()
     if (!text || status === 'loading') return
 
-    const intent = getChatbotIntent(text)
-    const productAssistantResponse = intent === 'question'
-      ? getProductAssistantResponse(text, productAssistantCatalog)
+    const explicitIntent = getChatbotIntent(text)
+    const isHumanRequest = explicitIntent === 'human'
+    const isCancellation = Boolean(activeWorkflow || deliveryInquiry) && /\b(?:cancelar|cancela|salir|empezar\s+de\s+nuevo)\b/i.test(text)
+    const isExplicitWorkflowSwitch = chatbotWorkflowTypes.has(explicitIntent) &&
+      explicitIntent !== activeWorkflow?.type &&
+      chatbotWorkflowStarterPatterns[explicitIntent]?.test(text)
+    const deliveryResponse = !isHumanRequest && !isCancellation && !isExplicitWorkflowSwitch &&
+      (isDeliveryInformationRequest(text) || shouldContinueDeliveryInquiry(text, deliveryInquiry))
+      ? getDeliveryAssistantResponse(text, deliveryInquiry)
       : null
+    setDeliveryInquiry(deliveryResponse?.inquiry ?? null)
+    let workflow = isHumanRequest || isCancellation || deliveryResponse
+      ? null
+      : isExplicitWorkflowSwitch
+        ? createChatbotWorkflow(explicitIntent)
+        : activeWorkflow || (chatbotWorkflowTypes.has(explicitIntent) ? createChatbotWorkflow(explicitIntent) : null)
+    const intent = isHumanRequest ? 'human' : deliveryResponse ? 'question' : workflow?.type || explicitIntent
+    let workflowSubmission = ''
+    let completedWorkflowData = {}
+    let offlineReply = ''
+    let workflowResponse = null
+
+    if (isHumanRequest) {
+      setActiveWorkflow(null)
+    } else if (isCancellation) {
+      setActiveWorkflow(null)
+      workflowResponse = { text: 'Listo, cancelé el proceso actual. ¿En qué más puedo ayudarte?' }
+    } else if (workflow) {
+      workflow = updateChatbotWorkflow(workflow, text, chatMessages)
+      const nextQuestion = getChatbotWorkflowResponse(workflow)
+
+      if (nextQuestion) {
+        setActiveWorkflow(workflow)
+        workflowResponse = { text: nextQuestion }
+      } else {
+        setActiveWorkflow(null)
+        workflow = {
+          ...workflow,
+          data: {
+            ...workflow.data,
+            requestId: workflow.data.requestId || createChatbotRequestId(workflow.type),
+          },
+        }
+        workflowSubmission = buildChatbotWorkflowSubmission(workflow)
+        completedWorkflowData = workflow.data
+        offlineReply = 'Ya reuní todos los datos, pero en este momento no pude enviarlos al equipo Naval. La información permanece en esta conversación; intenta enviarla nuevamente más tarde.'
+      }
+    }
+
+    const currentProduct = findAssistantProduct(text, productAssistantCatalog)
+    const recentConversationProduct = currentProduct || getRecentSingleChatbotProduct(chatMessages)
+    const contextualProductMessage = currentProduct || !recentConversationProduct
+      ? text
+      : `${text} ${recentConversationProduct.name}`
+    const productRecommendationResponse = intent === 'question' && !workflowResponse
+      ? getProductRecommendationResponse(text, productAssistantCatalog)
+      : null
+    const productInterestClarificationResponse = intent === 'question' && !workflowResponse
+      ? getProductInterestClarificationResponse(text, recentConversationProduct)
+      : null
+    const productAssistantResponse = intent === 'question' && !workflowResponse
+      ? getProductAssistantResponse(contextualProductMessage, productAssistantCatalog)
+      : null
+    const rawLocalAssistantResponse = workflowResponse ||
+      (deliveryResponse ? { text: deliveryResponse.text } : null) ||
+      productInterestClarificationResponse ||
+      productRecommendationResponse ||
+      productAssistantResponse ||
+      getLocalChatbotResponse(text, intent, [...chatMessages, { from: 'user', text }])
+    const localAssistantResponse = hideUnrequestedChatbotActions(rawLocalAssistantResponse, text)
     if (typeof window !== 'undefined') {
       window.dataLayer = window.dataLayer || []
       window.dataLayer.push({
@@ -5292,12 +6431,12 @@ function FloatingChatbot() {
       { from: 'user', text },
     ]
 
-    if (productAssistantResponse) {
+    if (localAssistantResponse) {
       setMessage('')
       setChatMessages((currentMessages) => [
         ...currentMessages,
         { from: 'user', text },
-        { from: 'bot', ...productAssistantResponse },
+        { from: 'bot', ...localAssistantResponse },
       ])
       setStatus('success')
       return
@@ -5318,9 +6457,12 @@ function FloatingChatbot() {
     requestTimeoutRef.current = timeoutId
 
     try {
-      const botResponse = await sendToMake(text, {
+      const botResponse = await sendToMake(workflowSubmission || text, {
         signal: abortController.signal,
         conversation: conversationForWebhook,
+        intent,
+        offlineReply,
+        workflowData: completedWorkflowData,
       })
       window.clearTimeout(timeoutId)
 
@@ -5349,12 +6491,17 @@ function FloatingChatbot() {
       requestTimeoutRef.current = null
       requestAbortControllerRef.current = null
       setStatus('error')
+      const recoveryText = offlineReply || getChatbotRecoveryResponse(intent, conversationForWebhook)
+      const whatsappMessage = buildChatbotWhatsappFallbackMessage(intent, conversationForWebhook)
       setChatMessages((currentMessages) =>
         currentMessages.map((chatMessage) =>
           chatMessage.id === writingMessageId
             ? {
                 from: 'bot',
-                text: 'En este momento no pudimos procesar tu solicitud. Por favor intenta nuevamente.',
+                text: recoveryText,
+                whatsappUrl: intent === 'human'
+                  ? `${whatsappHref}?text=${encodeURIComponent(whatsappMessage)}`
+                  : '',
               }
             : chatMessage,
         ),
@@ -5406,7 +6553,7 @@ function FloatingChatbot() {
             <button type="button" onClick={() => resetChatbotConversation()} aria-label="Nueva conversación" title="Nueva conversación">
               +
             </button>
-            <button type="button" onClick={() => resetChatbotConversation({ closeChat: true })} aria-label="Cerrar chatbot">
+            <button type="button" onClick={() => setIsOpen(false)} aria-label="Cerrar chatbot">
               ×
             </button>
           </div>
@@ -5423,10 +6570,19 @@ function FloatingChatbot() {
                   .filter(Boolean)
                   .join(' ')}
               >
-                <p>{extractChatbotReply(chatMessage.text)}</p>
+                <ChatbotMessageContent text={chatMessage.text} />
                 {chatMessage.actions?.length ? (
                   <div className="floating-chatbot__message-actions">
-                    {chatMessage.actions.map((action) => (
+                    {chatMessage.actions.map((action) => action.message ? (
+                      <button
+                        key={`${action.label}-${action.message}`}
+                        type="button"
+                        onClick={() => submitChatbotMessage(action.message)}
+                        data-event="chatbot_choice"
+                      >
+                        {action.label}
+                      </button>
+                    ) : (
                       <a
                         key={`${action.label}-${action.href}`}
                         href={action.href}
@@ -5515,7 +6671,7 @@ function FloatingChatbot() {
         aria-expanded={isOpen}
         onClick={() => {
           if (isOpen) {
-            resetChatbotConversation({ closeChat: true })
+            setIsOpen(false)
             return
           }
 
@@ -5690,7 +6846,6 @@ function ShopPageSections() {
         preload="auto"
         autoPlay
         muted
-        defaultMuted
         playsInline
         webkit-playsinline="true"
         x5-playsinline="true"
@@ -5890,7 +7045,6 @@ function InteriorPage({ pageKey, canonicalKey = pageKey }) {
               preload="auto"
               autoPlay
               muted
-              defaultMuted
               playsInline
               webkit-playsinline="true"
               x5-playsinline="true"
@@ -5939,7 +7093,6 @@ function InteriorPage({ pageKey, canonicalKey = pageKey }) {
             preload="auto"
             autoPlay
             muted
-            defaultMuted
             playsInline
             webkit-playsinline="true"
             x5-playsinline="true"

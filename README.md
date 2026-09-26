@@ -13,9 +13,10 @@ Ofrecer una experiencia web centralizada para consultar productos y documentos t
 - Páginas individuales de producto con acceso a fichas técnicas y de seguridad públicas.
 - Tienda orientada a preparar solicitudes de cotización; no procesa pagos directamente.
 - Carrito y formularios comerciales.
-- Asistente de producto basado en el catálogo incluido en el frontend.
-- Chat comercial con opciones de cotización, pedidos, consultas y transferencia a atención humana.
-- Función serverless que actúa como intermediaria entre el navegador y un webhook de Make configurado externamente.
+- Asistente de producto basado en el catálogo incluido en el frontend, con tolerancia a errores ortográficos, recomendaciones, usos, diluciones, presentaciones y documentos.
+- Chat comercial con contexto entre mensajes y recorridos guiados, dato por dato, para cotizaciones, capacitaciones, quejas, agendamientos y transferencia a atención humana.
+- Función serverless que actúa como intermediaria entre el navegador y Make, con respuestas útiles aunque la automatización externa esté temporalmente fuera de servicio.
+- Respaldo opcional mediante la API de Responses de OpenAI para preguntas abiertas; las claves permanecen únicamente en el servidor.
 - Rutas por producto y sector, redirecciones compatibles con la estructura actual y fallback de SPA.
 - Metadatos SEO, `robots.txt`, manifiesto web y generación automática del sitemap durante el build.
 
@@ -64,9 +65,13 @@ Vite mostrará la dirección local en la terminal.
 | Variable | Entorno | Uso |
 | --- | --- | --- |
 | `MAKE_WEBHOOK_URL` | Servidor | URL privada del webhook de Make utilizada por la función serverless. |
+| `OPENAI_API_KEY` | Servidor, opcional | Activa el respaldo para preguntas abiertas mediante la API de Responses cuando Make falla. |
+| `OPENAI_MODEL` | Servidor, opcional | Modelo usado por el respaldo de OpenAI. Valor predeterminado: `gpt-4.1-mini`. |
 | `VITE_MAKE_WEBHOOK_ENDPOINT` | Navegador, opcional | Sobrescribe la ruta pública usada por el frontend. Si está vacía, se usa `/api/make-webhook`. |
 
-`MAKE_WEBHOOK_URL` no debe exponerse al navegador. Toda variable con prefijo `VITE_` forma parte del bundle público y no puede contener secretos, tokens ni credenciales.
+`MAKE_WEBHOOK_URL` y `OPENAI_API_KEY` no deben exponerse al navegador. Toda variable con prefijo `VITE_` forma parte del bundle público y no puede contener secretos, tokens ni credenciales.
+
+El chat completa primero cada solicitud comercial dentro de la conversación y la envía a Make únicamente cuando ya tiene los datos necesarios. Si Make falla, responde con el respaldo de OpenAI para preguntas generales o con una guía local. Los enlaces de navegación y documentos se muestran cuando el cliente solicita verlos; el enlace de WhatsApp solo aparece cuando pide explícitamente hablar con una persona. Nunca confirma que una solicitud fue registrada cuando el webhook no pudo recibirla.
 
 ## Scripts
 

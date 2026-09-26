@@ -7349,7 +7349,7 @@ a {
   justify-self: end;
 }
 
-.floating-chatbot__message p {
+.floating-chatbot__message-content {
   margin: 0;
   padding: 9px 11px;
   border-radius: 8px;
@@ -7358,17 +7358,51 @@ a {
   font-size: 0.84rem;
   font-weight: 700;
   line-height: 1.42;
-  white-space: pre-line;
   overflow-wrap: anywhere;
   box-shadow: 0 8px 22px rgba(47, 67, 143, 0.08);
 }
 
-.floating-chatbot__message.is-user p {
+.floating-chatbot__message-content p,
+.floating-chatbot__message-content strong,
+.floating-chatbot__message-content ul {
+  margin: 0;
+}
+
+.floating-chatbot__message-content p + p,
+.floating-chatbot__message-content p + strong,
+.floating-chatbot__message-content ul + p,
+.floating-chatbot__message-content ul + strong,
+.floating-chatbot__message-content strong + p,
+.floating-chatbot__message-content strong + ul {
+  margin-top: 8px;
+}
+
+.floating-chatbot__message-content strong {
+  display: block;
+  color: #172b78;
+  font-weight: 900;
+}
+
+.floating-chatbot__message-content ul {
+  display: grid;
+  gap: 5px;
+  padding-left: 18px;
+}
+
+.floating-chatbot__message-content li::marker {
+  color: #c79a35;
+}
+
+.floating-chatbot__message.is-user .floating-chatbot__message-content {
   background: #2f438f;
   color: #ffffff;
 }
 
-.floating-chatbot__message.is-writing p {
+.floating-chatbot__message.is-user .floating-chatbot__message-content strong {
+  color: inherit;
+}
+
+.floating-chatbot__message.is-writing .floating-chatbot__message-content {
   color: rgba(47, 67, 143, 0.68);
   font-style: italic;
   font-weight: 800;
@@ -7380,16 +7414,20 @@ a {
   gap: 7px;
 }
 
-.floating-chatbot__message .floating-chatbot__message-actions a {
+.floating-chatbot__message .floating-chatbot__message-actions a,
+.floating-chatbot__message .floating-chatbot__message-actions button {
   background: #2f438f;
 }
 
 .floating-chatbot__message .floating-chatbot__message-actions a:hover,
-.floating-chatbot__message .floating-chatbot__message-actions a:focus-visible {
+.floating-chatbot__message .floating-chatbot__message-actions a:focus-visible,
+.floating-chatbot__message .floating-chatbot__message-actions button:hover,
+.floating-chatbot__message .floating-chatbot__message-actions button:focus-visible {
   background: #c79a35;
 }
 
 .floating-chatbot__message a,
+.floating-chatbot__message .floating-chatbot__message-actions button,
 .floating-chatbot__fallback {
   display: inline-flex;
   align-items: center;
@@ -7402,6 +7440,8 @@ a {
   font-size: 0.76rem;
   font-weight: 900;
   text-decoration: none;
+  border: 0;
+  cursor: pointer;
 }
 
 .floating-chatbot__quick-actions {
