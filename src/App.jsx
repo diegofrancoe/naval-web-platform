@@ -1191,59 +1191,6 @@ const pageContent = {
       },
     ],
   },
-  contacto: {
-    eyebrow: 'CONTACTO',
-    title: 'Contacto Naval',
-    intro:
-      'Solicita cotización, asesoría comercial o información sobre productos de limpieza institucional e industrial.',
-    seoTitle: 'Contacto Naval | Solicita asesoría en productos de limpieza',
-    seoDescription:
-      'Contacta a Naval para solicitar cotización, asesoría comercial o información sobre productos de limpieza institucional e industrial en Bogotá y municipios aledaños.',
-    noIndex: true,
-    heroImage: factorySeoImage,
-    heroImageAlt: 'Asesoría comercial Naval para productos de limpieza profesional',
-    featureTag: 'Asesoría comercial',
-    featureTitle: 'Un canal directo para resolver necesidades de limpieza profesional.',
-    featureText:
-      'Cuéntanos qué tipo de operación manejas, qué productos necesitas y en qué ciudad estás para orientar mejor tu cotización.',
-    metrics: [
-      { value: 'Bogotá', label: 'y municipios aledaños' },
-      { value: 'WhatsApp', label: 'atención comercial' },
-      { value: 'Cotiza', label: 'según tu operación' },
-    ],
-    highlights: [
-      {
-        eyebrow: 'WhatsApp',
-        title: 'Respuesta comercial',
-        text: 'Escríbenos para recibir orientación sobre productos, presentaciones, disponibilidad y cotización.',
-      },
-      {
-        eyebrow: 'Cobertura',
-        title: 'Bogotá y municipios aledaños',
-        text: 'Atendemos empresas, instituciones, distribuidores y operaciones que requieren reposición o asesoría.',
-      },
-    ],
-    checklist: [
-      'WhatsApp comercial para asesoría rápida.',
-      'Correo para solicitudes formales y cotizaciones.',
-      'Cobertura en Bogotá y municipios aledaños.',
-      'CTA directo para iniciar una cotización.',
-    ],
-    sections: [
-      {
-        title: 'WhatsApp',
-        text: 'Escríbenos al WhatsApp comercial para solicitar asesoría, disponibilidad de productos o apoyo con una cotización.',
-      },
-      {
-        title: 'Correo electrónico',
-        text: 'Envía solicitudes formales a servicioalcliente@productosnaval.com con ciudad, producto de interés, cantidad estimada y datos de contacto.',
-      },
-      {
-        title: 'Cotización y asesoría',
-        text: 'Si no sabes qué producto elegir, el equipo Naval puede ayudarte a seleccionar una solución según superficie, frecuencia de uso, tipo de suciedad y presentación requerida.',
-      },
-    ],
-  },
   'politica-tratamiento-datos': {
     eyebrow: 'Legal',
     title: 'Política de tratamiento de datos',
@@ -2642,7 +2589,6 @@ const routeAliases = {
   '': 'quienes-somos',
   productos: 'lineas',
   sectores: 'lineas',
-  contacto: 'contacto',
   blog: 'guias',
   guias: 'guias',
   tienda: 'pedido',
@@ -2673,7 +2619,6 @@ const primaryPagePathByKey = {
   preguntas: '/preguntas-frecuentes',
   pedido: '/tienda',
   guias: '/guias',
-  contacto: '/contacto',
   'lineas-todos': '/productos/todos',
   'lineas-limpieza-general': '/productos/limpieza-general',
   'lineas-pisos-superficies': '/productos/pisos-y-superficies',
@@ -5346,7 +5291,7 @@ function buildChatbotCatalogContext(chatMessages) {
     'Usa únicamente los productos y datos publicados abajo. No menciones ni recomiendes productos externos.',
     delicateSurface && `Superficie delicada detectada: ${delicateSurface}. La lista ya fue filtrada para incluir solo compatibilidades explícitas del catálogo.`,
     ...productContext,
-    'Navegación disponible: catálogo /productos/todos; tienda /tienda; preguntas frecuentes /preguntas-frecuentes; capacitaciones /#lineas-capacitaciones; contacto /contacto.',
+    `Navegación disponible: catálogo /productos/todos; tienda /tienda; preguntas frecuentes /preguntas-frecuentes; capacitaciones /#lineas-capacitaciones; contacto directo por WhatsApp ${whatsappContactHref}.`,
   ].join('\n')
 }
 
@@ -5837,7 +5782,7 @@ function getLocalChatbotResponse(message, intent, chatMessages = []) {
   if (/\b(?:telefono|correo|email|whatsapp|contacto|donde estan|ubicacion)\b/.test(normalizedMessage) && intent === 'question') {
     return {
       text: 'Puedes contactar a Productos Naval por WhatsApp al +57 320 342 8815 o por correo a servicioalcliente@productosnaval.com.',
-      actions: [{ label: 'Ver contacto', href: '/contacto' }],
+      actions: [{ label: 'Abrir WhatsApp', href: whatsappContactHref, external: true }],
     }
   }
 
@@ -5853,7 +5798,7 @@ function getLocalChatbotResponse(message, intent, chatMessages = []) {
     { pattern: /\b(?:preguntas frecuentes|faq|dudas frecuentes)\b/, text: 'Aquí encuentras respuestas rápidas sobre productos, compras, asesoría y operación.', actions: [{ label: 'Ver preguntas frecuentes', href: '/preguntas-frecuentes' }] },
     { pattern: /\b(?:tienda|carrito|hacer pedido|armar pedido)\b/, text: 'Puedes preparar tu solicitud desde la tienda y enviarla para cotización.', actions: [{ label: 'Ir a la tienda', href: '/tienda' }] },
     { pattern: /\b(?:guias|blog|articulos|consejos de limpieza)\b/, text: 'Puedes consultar las guías de Naval para elegir y usar soluciones de limpieza.', actions: [{ label: 'Ver guías', href: '/guias' }] },
-    { pattern: /\b(?:contacto|contactenos|pagina de contacto)\b/, text: 'Aquí encuentras los canales de atención comercial de Productos Naval.', actions: [{ label: 'Ir a contacto', href: '/contacto' }] },
+    { pattern: /\b(?:contacto|contactenos|pagina de contacto)\b/, text: 'Puedes escribir directamente a Productos Naval por WhatsApp.', actions: [{ label: 'Abrir WhatsApp', href: whatsappContactHref, external: true }] },
     { pattern: /\b(?:capacitaciones|formacion tecnica|seguridad quimica)\b/, text: 'La sección de capacitaciones explica los temas, beneficios y forma de solicitar formación para tu equipo.', actions: [{ label: 'Ver capacitaciones', href: '/#lineas-capacitaciones' }] },
   ]
   const pageNavigation = pageNavigationRules.find(({ pattern }) => pattern.test(normalizedMessage))
@@ -5867,7 +5812,7 @@ function getLocalChatbotResponse(message, intent, chatMessages = []) {
         { label: 'Tienda', href: '/tienda' },
         { label: 'Capacitaciones', href: '/#lineas-capacitaciones' },
         { label: 'Preguntas frecuentes', href: '/preguntas-frecuentes' },
-        { label: 'Contacto', href: '/contacto' },
+        { label: 'Contacto', href: whatsappContactHref, external: true },
       ],
     }
   }
@@ -6588,7 +6533,7 @@ function FloatingChatbot() {
                         href={action.href}
                         target={action.external ? '_blank' : undefined}
                         rel={action.external ? 'noreferrer' : undefined}
-                        data-event="chatbot_navigation"
+                        data-event={action.href?.startsWith(whatsappHref) ? 'click_whatsapp' : 'chatbot_navigation'}
                         data-destination={action.href}
                       >
                         {action.label}
@@ -7329,6 +7274,10 @@ export default function App() {
   const routedPageExists = Boolean(activeRoute && pageContent[activeRoute])
   const activePageKey = routedPageExists ? activeRoute : 'quienes-somos'
   const activeCanonicalKey = activePageKey
+
+  useEffect(() => {
+    if (route === 'contacto') window.location.replace(whatsappContactHref)
+  }, [route])
 
   useEffect(() => {
     if (route === 'lineas-capacitaciones') {

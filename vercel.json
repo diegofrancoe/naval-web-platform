@@ -2,6 +2,11 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "redirects": [
     {
+      "source": "/contacto",
+      "destination": "https://wa.me/573203428815?text=Hola%2C%20quiero%20informaci%C3%B3n%20sobre%20los%20productos%20Naval.",
+      "permanent": false
+    },
+    {
       "source": "/blog",
       "destination": "/guias",
       "permanent": true
