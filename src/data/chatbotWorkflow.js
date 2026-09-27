@@ -48,7 +48,7 @@ export function hasProductPackageQuantity(message) {
 }
 
 export function isAffirmativeAnswer(message) {
-  return /^(?:s[ií](?:,?\s+(?:me\s+sirve|confirmo|enviar|envíalo|envialo))?|claro|correcto|confirmo|confirmado|de acuerdo|ok|okay|perfecto|me sirve|esta bien|está bien)[.!\s]*$/i.test(message.trim())
+  return /^(?:s[ií](?:,?\s+(?:me\s+sirve|confirmo|enviar|envíalo|envialo|(?:est[aá]|es|todo)\s+correcto|est[aá]\s+bien))?|claro|correcto|confirmo|confirmado|de acuerdo|ok|okay|perfecto|me sirve|esta bien|está bien|as[ií] est[aá] bien)[.!\s]*$/i.test(message.trim())
 }
 
 export function isValidCityAnswer(message) {

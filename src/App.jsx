@@ -7,7 +7,6 @@ import {
   normalizeAssistantText,
 } from './data/productAssistantCatalog'
 import {
-  extractDailySolutionLiters,
   extractOperationSize,
   extractTrainingDate,
   extractTrainingTime,
@@ -20,11 +19,13 @@ import {
   isValidAttendeeAnswer,
   isValidAddressAnswer,
   isValidCityAnswer,
-  parseDilutionMlPerLiter,
-  parsePresentationMilliliters,
   wantsQuantityHelp,
 } from './data/chatbotWorkflow'
 import { getDeliveryAssistantResponse, shouldContinueDeliveryInquiry } from './data/deliveryAssistant'
+import { getQuoteChangeTarget, isQuoteChangeRequest, parseQuoteQuantity } from './data/quoteOrder'
+import { applyInterpretedTurn, parseLocalTurn } from './data/assistantTurn'
+import { buildCatalogContext } from './data/catalogRetrieval'
+import { isWorkflowStarter } from './data/workflowRouting'
 import brandImage from './assets/naval.png'
 import kitchenHeroImage from './assets/optimized/cocina-hero-fast.jpg'
 import shopHeroVideo from './assets/video-tienda.mp4'
@@ -4934,12 +4935,6 @@ function extractChatbotConversationContactData(chatMessages) {
 
 const chatbotWorkflowTypes = new Set(['quote', 'complaint', 'training'])
 
-const chatbotWorkflowStarterPatterns = {
-  quote: /^\s*(?:📋\s*)?(?:solicitar|quiero|necesito|deseo)?\s*(?:una\s+)?cotizaci[oó]n\s*[.!]?\s*$/i,
-  complaint: /^\s*(?:⚠️\s*)?(?:reportar|poner|quiero|necesito)?\s*(?:una\s+)?(?:queja|reclamo)\s*[.!]?\s*$/i,
-  training: /^\s*(?:🎓\s*)?(?:solicitar|quiero|necesito|deseo|agendar|programar)?\s*(?:una\s+)?capacitaci[oó]n(?:es)?\s*[.!]?\s*$/i,
-}
-
 const chatbotWorkflowFieldOrder = {
   quote: ['product', 'quantity', 'city', 'address', 'name', 'phone', 'email'],
   complaint: ['reason', 'detailsConfirmed', 'name', 'city', 'phone', 'email', 'submissionConfirmed'],
@@ -4952,9 +4947,12 @@ function createChatbotWorkflow(type) {
 
 function getChatbotWorkflowFields(workflow) {
   const quoteProductFields = workflow.data.products?.length > 1 ? ['product', 'selectionConfirmed'] : ['product']
+  if (workflow.type === 'quote' && workflow.data.requestedProductCount > getQuoteProductNames(workflow.data).length) {
+    return ['productCountPending', ...quoteProductFields, 'quantity', 'orderConfirmed', 'city', 'address', 'name', 'phone', 'email', 'submissionConfirmed']
+  }
 
   if (workflow.type === 'quote' && workflow.data.needsQuantityHelp) {
-    return [...quoteProductFields, 'operationSize', 'usageFrequency', 'solutionVolume', 'quantity', 'quantityConfirmed', 'orderConfirmed', 'city', 'address', 'name', 'phone', 'email', 'submissionConfirmed']
+    return [...quoteProductFields, 'operationSize', 'usageFrequency', 'orderConfirmed', 'city', 'address', 'name', 'phone', 'email', 'submissionConfirmed']
   }
 
   if (workflow.type === 'quote') {
@@ -5019,14 +5017,31 @@ function getQuoteProductNames(data) {
   return data.product ? [data.product] : []
 }
 
+function getQuoteLineItems(data) {
+  return getQuoteProductNames(data).map((name) => {
+    const item = data.quoteItems?.find((entry) => entry.name === name)
+    return { name, presentation: item?.presentation || '', quantity: item?.quantity || '' }
+  })
+}
+
+function syncQuoteLineItems(data) {
+  data.quoteItems = getQuoteLineItems(data)
+  data.quantity = data.quoteItems.length && data.quoteItems.every((item) => item.quantity)
+    ? data.quoteItems.map((item) => `${item.name}: ${item.quantity}${item.presentation && !item.quantity.includes(item.presentation) ? ` (${item.presentation})` : ''}`).join('; ')
+    : ''
+}
+
 function buildQuoteOrderSummary(data, { includeContact = false } = {}) {
-  const productNames = getQuoteProductNames(data)
+  const items = getQuoteLineItems(data)
   const lines = [
-    'Resumen de la cotización',
+    'Resumen de la solicitud de cotización',
     '',
-    `Productos (${productNames.length}):`,
-    ...productNames.map((productName) => `• ${productName}`),
-    data.quantity ? `Cantidad: ${data.quantity}` : 'Cantidad: pendiente por definir',
+    `Productos (${items.length}):`,
+    ...items.flatMap((item) => [
+      `• ${item.name}`,
+      `  Presentación: ${item.presentation || 'por definir'}`,
+      `  Cantidad solicitada: ${item.quantity || 'pendiente por definir'}`,
+    ]),
   ]
 
   if (includeContact) {
@@ -5037,37 +5052,26 @@ function buildQuoteOrderSummary(data, { includeContact = false } = {}) {
       `Nombre: ${data.name || 'pendiente'}`,
       `Teléfono: ${data.phone || 'pendiente'}`,
       `Correo: ${data.email || 'pendiente'}`,
+      ...(data.operationSize ? [`Tamaño de la operación: ${data.operationSize}`] : []),
+      ...(data.usageFrequency ? [`Frecuencia de uso: ${data.usageFrequency}`] : []),
     )
   }
 
   return lines.join('\n')
 }
 
-function formatQuoteQuantity(message, productCount = 1) {
-  const match = message.match(/\b(\d+(?:[.,]\d+)?)\s*(unidades?|envases?|botellas?|bidones?|canecas?|cajas?|galones?|litros?|lts?|cc|ml)\b/i)
-  if (!match) return cleanChatbotFieldValue(message)
-
-  const amount = Number(match[1].replace(',', '.'))
-  const unit = match[2]
-  if (productCount > 1 && /\b(?:cada\s+uno|cada\s+una|cada\s+producto|de\s+cada)\b/i.test(message)) {
-    const total = Number.isFinite(amount) ? amount * productCount : ''
-    return `${match[1]} ${unit} de cada producto${total ? ` (${total} ${unit} en total)` : ''}`
-  }
-
-  return match[0]
-}
-
 function getQuotePendingPrompt(field) {
   const prompts = {
     product: 'Indícame qué producto o necesidad deseas cotizar.',
+    productCountPending: 'Indícame el nombre de los productos adicionales que deseas incluir.',
     selectionConfirmed: 'Confirma si deseas incluir esos productos o dime cuál quieres retirar.',
-    quantity: 'Indícame la cantidad y presentación que necesitas. Si no la conoces, puedo ayudarte a estimarla.',
+    quantity: 'Indícame la cantidad y presentación que deseas solicitar. Si no la conoces, registraré tu operación para que un vendedor te asesore.',
     orderConfirmed: 'Confirma si los productos y cantidades del resumen son correctos.',
     city: '¿En qué ciudad necesitas la entrega?',
     address: '¿Cuál es la dirección de entrega?',
-    name: '¿A nombre de quién preparamos la cotización?',
+    name: '¿A nombre de quién registramos la solicitud?',
     phone: '¿Cuál es tu teléfono de contacto?',
-    email: '¿A qué correo enviamos la cotización?',
+    email: '¿A qué correo puede responderte el vendedor con la cotización?',
     submissionConfirmed: 'Confirma si deseas enviar esta solicitud al equipo comercial.',
   }
   return prompts[field] || 'Comparte el dato pendiente para continuar.'
@@ -5160,33 +5164,6 @@ function getWorkflowPendingPrompt(type, field) {
   return promptsByType[type]?.[field] || 'Comparte el dato pendiente para continuar.'
 }
 
-function buildChatbotQuantityEstimate(productName, dailySolutionLiters = 1) {
-  const product = findAssistantProduct(productName ?? '', productAssistantCatalog)
-  const dilutionText = Array.isArray(product?.dilution) ? product.dilution.join(' ') : product?.dilution
-  const dilutionMlPerLiter = parseDilutionMlPerLiter(dilutionText)
-  const presentations = (product?.presentations ?? [])
-    .map((label) => ({ label, milliliters: parsePresentationMilliliters(label) }))
-    .filter(({ milliliters }) => milliliters)
-    .sort((left, right) => left.milliliters - right.milliliters)
-
-  if (!product || !dilutionMlPerLiter || !presentations.length || !dailySolutionLiters) return null
-
-  const monthlyConcentrateMl = Math.ceil(dilutionMlPerLiter * dailySolutionLiters * 30)
-  const presentation = presentations.find(({ milliliters }) => milliliters >= monthlyConcentrateMl) ?? presentations.at(-1)
-  const units = Math.max(1, Math.ceil(monthlyConcentrateMl / presentation.milliliters))
-  const estimatedDays = Math.floor((presentation.milliliters * units) / (dilutionMlPerLiter * dailySolutionLiters))
-
-  return {
-    dailySolutionLiters,
-    dilutionMlPerLiter,
-    monthlyConcentrateMl,
-    presentation: presentation.label,
-    units,
-    estimatedDays,
-    quantity: `${units} ${units === 1 ? 'envase' : 'envases'} de ${presentation.label}`,
-  }
-}
-
 function getChatbotProductPresentations(productName) {
   const product = findAssistantProduct(productName ?? '', productAssistantCatalog)
   return product?.presentations?.filter(Boolean) ?? []
@@ -5204,95 +5181,12 @@ function getChatbotSectorRecommendation(sector) {
   return products.length ? { ...rule, products } : null
 }
 
-const chatbotSalesStopWords = new Set([
-  'para', 'como', 'quiero', 'necesito', 'producto', 'productos', 'limpiar', 'limpieza', 'usar', 'tengo',
-  'hacer', 'sobre', 'donde', 'cual', 'cuanto', 'ayuda', 'ayudar', 'naval', 'esta', 'este', 'estos', 'estas',
-])
-
 function buildChatbotCatalogContext(chatMessages) {
-  const customerText = chatMessages
-    .filter((chatMessage) => chatMessage.from === 'user' && chatMessage.text)
-    .slice(-6)
-    .map((chatMessage) => chatMessage.text)
-    .join(' ')
-  const normalizedCustomerText = normalizeAssistantText(customerText)
-  const searchTerms = Array.from(new Set(
-    normalizedCustomerText
-      .split(/\s+/)
-      .filter((term) => term.length >= 4 && !chatbotSalesStopWords.has(term)),
-  ))
   const sector = extractChatbotConversationContactData(chatMessages).sector
-  const sectorProducts = new Set(getChatbotSectorRecommendation(sector)?.products.map((product) => product.name) ?? [])
-  const delicateSurface = [
-    'acero inoxidable',
-    'marmol',
-    'granito',
-    'madera',
-    'cuero',
-    'vinilo',
-    'aluminio',
-  ].find((surface) => normalizedCustomerText.includes(surface))
-
-  const rankedProducts = productAssistantCatalog
-    .map((product) => {
-      const searchableText = normalizeAssistantText([
-        product.name,
-        product.category,
-        product.summary,
-        product.b2bUse,
-        ...(product.surfaces ?? []),
-        ...(product.applications ?? []),
-      ].join(' '))
-      const searchableWords = new Set(searchableText.split(/\s+/))
-      const matchingTerms = searchTerms.filter((term) => searchableWords.has(term))
-      const aliasMatch = product.aliases.some((alias) => normalizedCustomerText.includes(alias))
-      const score = matchingTerms.length * 2 + (aliasMatch ? 10 : 0) + (sectorProducts.has(product.name) ? 6 : 0)
-      const compatibilityText = normalizeAssistantText([
-        product.summary,
-        ...(product.surfaces ?? []),
-      ].join(' '))
-      const hasExplicitDelicateSurface = !delicateSurface || compatibilityText.includes(delicateSurface)
-      return { product, score, hasExplicitDelicateSurface }
-    })
-    .filter(({ score, hasExplicitDelicateSurface }) => score > 0 && hasExplicitDelicateSurface)
-    .sort((left, right) => right.score - left.score)
-    .slice(0, 7)
-    .map(({ product }) => product)
-
-  const fallbackNames = [
-    'Detergente Limpiador Multiusos',
-    'Limpiador Desinfectante',
-    'Desengrasante',
-    'Detergente Multicocina',
-    'Limpia Vidrios',
-    'Cera Polimérica',
-  ]
-  const relevantProducts = rankedProducts.length
-    ? rankedProducts
-    : delicateSurface
-      ? []
-      : fallbackNames.map((name) => productAssistantCatalog.find((product) => product.name === name)).filter(Boolean)
-
-  const productContext = relevantProducts.map((product) => {
-    const dilution = (Array.isArray(product.dilution) ? product.dilution : [product.dilution]).filter(Boolean).join(' | ')
-    return [
-      `Producto: ${product.name}`,
-      product.summary && `Uso publicado: ${product.summary}`,
-      product.surfaces?.length && `Superficies: ${product.surfaces.join(', ')}`,
-      product.applications?.length && `Aplicaciones: ${product.applications.join(', ')}`,
-      product.presentations?.length && `Presentaciones: ${product.presentations.join(', ')}`,
-      dilution && `Dosificación publicada: ${dilution}`,
-      dilution && /uso puro/i.test(dilution) && 'No hay rendimiento por m² publicado: no calcular cantidad desde el área ni inventar frecuencia de reaplicación.',
-    ].filter(Boolean).join(' | ')
+  return buildCatalogContext(chatMessages, productAssistantCatalog, {
+    sectorProductNames: getChatbotSectorRecommendation(sector)?.products.map((product) => product.name) || [],
+    contactHref: whatsappContactHref,
   })
-
-  return [
-    'CONTEXTO COMERCIAL INTERNO DE PRODUCTOS NAVAL',
-    'Usa únicamente los productos y datos publicados abajo. No menciones ni recomiendes productos externos.',
-    delicateSurface && `Superficie delicada detectada: ${delicateSurface}. La lista ya fue filtrada para incluir solo compatibilidades explícitas del catálogo.`,
-    ...productContext,
-    `Navegación disponible: catálogo /productos/todos; tienda /tienda; preguntas frecuentes /preguntas-frecuentes; capacitaciones /#lineas-capacitaciones; contacto directo por WhatsApp ${whatsappContactHref}.`,
-  ].join('\n')
 }
 
 function updateChatbotWorkflow(workflow, message, chatMessages = []) {
@@ -5300,12 +5194,10 @@ function updateChatbotWorkflow(workflow, message, chatMessages = []) {
   const extractedData = extractChatbotContactData(message)
   const missingField = getChatbotWorkflowMissingField(workflow)
   const normalizedMessage = normalizeAssistantText(message)
-  const isStarterMessage = chatbotWorkflowStarterPatterns[workflow.type]?.test(message) ?? false
+  const isStarterMessage = isWorkflowStarter(workflow.type, message)
   const matchedProduct = findAssistantProduct(message, productAssistantCatalog)
   const operationSize = extractOperationSize(message)
   const usageFrequency = extractUsageFrequency(message)
-  const dailySolutionLiters = extractDailySolutionLiters(message)
-  const hadConfirmedQuantity = Boolean(data.quantityConfirmed)
   const workflowSummaryRequested = asksForWorkflowSummary(message, workflow.type)
   const trainingDate = workflow.type === 'training' ? extractTrainingDate(message) : ''
   const trainingTime = workflow.type === 'training' ? extractTrainingTime(message) : ''
@@ -5337,6 +5229,7 @@ function updateChatbotWorkflow(workflow, message, chatMessages = []) {
     if (recentProducts.length > 1) {
       data.products = recentProducts.map((product) => product.name)
       data.product = data.products.join(', ')
+      syncQuoteLineItems(data)
       delete data.selectionConfirmed
       delete data.orderConfirmed
       delete data.submissionConfirmed
@@ -5345,8 +5238,19 @@ function updateChatbotWorkflow(workflow, message, chatMessages = []) {
   if (workflow.type === 'quote' && matchedProduct && !data.products?.length) {
     data.product = matchedProduct.name
     data.products = [matchedProduct.name]
+    syncQuoteLineItems(data)
     delete data.orderConfirmed
     delete data.submissionConfirmed
+  }
+  if (workflow.type === 'quote' && missingField === 'productCountPending' && matchedProduct) {
+    if (!getQuoteProductNames(data).includes(matchedProduct.name)) {
+      data.products = [...getQuoteProductNames(data), matchedProduct.name]
+      data.product = data.products.join(', ')
+      syncQuoteLineItems(data)
+      delete data.selectionConfirmed
+      delete data.orderConfirmed
+      delete data.submissionConfirmed
+    }
   }
   if (workflow.type === 'quote' && !matchedProduct && isGenericProductReference(message)) {
     const recentProduct = getRecentSingleChatbotProduct(chatMessages)
@@ -5369,24 +5273,88 @@ function updateChatbotWorkflow(workflow, message, chatMessages = []) {
   if (workflow.type === 'quote' && operationSize) data.operationSize = operationSize
   if (workflow.type === 'quote' && usageFrequency) data.usageFrequency = usageFrequency
 
-  if (workflow.type === 'quote' && (wantsChatbotQuantityEstimate(message) || operationSize || usageFrequency) && !hasProductPackageQuantity(message)) {
-    data.needsQuantityHelp = true
-    if ((missingField === 'city' || missingField === 'address') && !hadConfirmedQuantity) {
-      delete data.quantity
-      delete data.quantityConfirmed
+  if (workflow.type === 'quote' && data.product) {
+    if (!data.quoteItems?.length) {
+      const previousQuantity = data.quantity
+      syncQuoteLineItems(data)
+      if (previousQuantity && data.quoteItems.length === 1) {
+        const previousParsed = parseQuoteQuantity(previousQuantity, getChatbotProductPresentations(data.product))
+        if (previousParsed.kind === 'presentation') data.quoteItems[0].presentation = previousParsed.presentation
+        if (previousParsed.kind === 'quantity') {
+          data.quoteItems[0].quantity = previousParsed.quantity
+          data.quoteItems[0].presentation = previousParsed.presentation || ''
+        }
+        syncQuoteLineItems(data)
+      }
+    }
+
+    const changeTarget = getQuoteChangeTarget(message)
+    if ((missingField === 'orderConfirmed' || data.editingOrder) && isQuoteChangeRequest(message) && !changeTarget) {
+      data.editingOrder = true
+      validationError = 'orderChangeTarget'
+    } else if ((missingField === 'orderConfirmed' || data.editingOrder) && changeTarget && (isQuoteChangeRequest(message) || data.editingOrder)) {
+      delete data.editingOrder
+      delete data.orderConfirmed
+      delete data.submissionConfirmed
+      if (changeTarget === 'product') {
+        delete data.product
+        delete data.products
+        delete data.quoteItems
+        delete data.quantity
+        delete data.selectionConfirmed
+      } else if (changeTarget === 'quantity') {
+        data.quoteItems = getQuoteLineItems(data).map((item) => ({ ...item, quantity: '' }))
+        syncQuoteLineItems(data)
+      } else {
+        validationError = 'orderChangeTarget'
+      }
+    }
+
+    const quantityUpdate = parseQuoteQuantity(message, getChatbotProductPresentations(data.product))
+    if (missingField === 'quantity' && quantityUpdate.kind === 'product-count') {
+      data.ambiguousCount = quantityUpdate.count
+      validationError = 'ambiguousProductCount'
+    }
+    if ((missingField === 'orderConfirmed' || missingField === 'selectionConfirmed') && quantityUpdate.kind === 'product-count') {
+      if (quantityUpdate.count > getQuoteProductNames(data).length) {
+        data.requestedProductCount = quantityUpdate.count
+        delete data.selectionConfirmed
+        delete data.orderConfirmed
+        delete data.submissionConfirmed
+      } else {
+        validationError = 'productCountClarification'
+      }
+    }
+
+    if (['quantity', 'selectionConfirmed'].includes(missingField) && ['quantity', 'presentation'].includes(quantityUpdate.kind)) {
+      const items = getQuoteLineItems(data)
+      const appliesToEach = items.length > 1 && /\b(?:cada\s+uno|cada\s+una|cada\s+producto|de\s+cada)\b/i.test(message)
+      const pendingIndex = items.findIndex((item) => !item.quantity)
+      const targetIndexes = appliesToEach ? items.map((_, index) => index) : [Math.max(0, pendingIndex)]
+      for (const index of targetIndexes) {
+        const item = items[index]
+        if (!item) continue
+        if (quantityUpdate.presentation) item.presentation = quantityUpdate.presentation
+        if (quantityUpdate.kind === 'quantity') {
+          item.quantity = quantityUpdate.unitCount && item.presentation && !quantityUpdate.presentation
+            ? `${quantityUpdate.quantity} de ${item.presentation}`
+            : quantityUpdate.quantity
+        }
+      }
+      data.quoteItems = items
+      syncQuoteLineItems(data)
+      delete data.ambiguousCount
+      if (quantityUpdate.kind === 'quantity') delete data.needsQuantityHelp
+      if (missingField === 'selectionConfirmed' && quantityUpdate.kind === 'quantity') data.selectionConfirmed = 'Sí (cantidades indicadas)'
+      delete data.orderConfirmed
+      delete data.submissionConfirmed
     }
   }
 
-  if (workflow.type === 'quote' && data.needsQuantityHelp && dailySolutionLiters) {
-    data.solutionVolume = `${dailySolutionLiters} L de solución preparada al día`
-    data.dailySolutionLiters = dailySolutionLiters
-    data.solutionVolumeAssumed = false
-    delete data.quantity
-    delete data.quantityConfirmed
-  } else if (workflow.type === 'quote' && missingField === 'solutionVolume' && wantsChatbotQuantityEstimate(message)) {
-    data.solutionVolume = '1 L de solución preparada al día (supuesto inicial)'
-    data.dailySolutionLiters = 1
-    data.solutionVolumeAssumed = true
+  if (workflow.type === 'quote' && missingField === 'quantity' && wantsChatbotQuantityEstimate(message)) {
+    data.needsQuantityHelp = true
+    data.quoteItems = getQuoteLineItems(data).map((item) => ({ ...item, quantity: item.quantity || 'Por definir con asesor' }))
+    syncQuoteLineItems(data)
   }
 
   const attendeesMatch = message.match(/\b(\d+\s*(?:personas?|participantes?|asistentes?))\b/i)
@@ -5400,13 +5368,10 @@ function updateChatbotWorkflow(workflow, message, chatMessages = []) {
 
   if (canUseDirectAnswer && missingField) {
     if (missingField === 'product' && !data.product && !extractedData.sector && !isGenericProductReference(message)) data.product = matchedProduct?.name || directAnswer
-    if (missingField === 'quantity' && !data.quantity && !data.needsQuantityHelp && hasProductPackageQuantity(message)) {
-      data.quantity = formatQuoteQuantity(message, getQuoteProductNames(data).length)
-      delete data.orderConfirmed
-      delete data.submissionConfirmed
-    }
     if (missingField === 'operationSize' && !data.operationSize && operationSize) data.operationSize = operationSize
+    if (missingField === 'operationSize' && !data.operationSize && wantsChatbotQuantityEstimate(message)) data.operationSize = 'No indicado'
     if (missingField === 'usageFrequency' && !data.usageFrequency && usageFrequency) data.usageFrequency = usageFrequency
+    if (missingField === 'usageFrequency' && !data.usageFrequency && wantsChatbotQuantityEstimate(message)) data.usageFrequency = 'No indicada'
     if (missingField === 'city' && !data.city) {
       if (isValidCityAnswer(message)) data.city = extractedData.city || directAnswer
       else validationError = wantsChatbotQuantityEstimate(message) ? 'cityQuantityMismatch' : 'city'
@@ -5441,16 +5406,6 @@ function updateChatbotWorkflow(workflow, message, chatMessages = []) {
     }
     if (missingField === 'detailsConfirmed' && isAffirmativeAnswer(message)) data.detailsConfirmed = 'Sí'
     if (missingField === 'selectionConfirmed' && isAffirmativeAnswer(message)) data.selectionConfirmed = 'Sí'
-    if (missingField === 'selectionConfirmed' && hasProductPackageQuantity(message)) {
-      data.selectionConfirmed = 'Sí (confirmación implícita al indicar cantidades)'
-      data.quantity = formatQuoteQuantity(message, getQuoteProductNames(data).length)
-      delete data.orderConfirmed
-      delete data.submissionConfirmed
-    }
-    if (missingField === 'quantityConfirmed' && isAffirmativeAnswer(message)) {
-      data.quantityConfirmed = 'Sí'
-      data.orderConfirmed = 'Sí'
-    }
     if (missingField === 'orderConfirmed' && isAffirmativeAnswer(message)) data.orderConfirmed = 'Sí'
     if (missingField === 'submissionConfirmed' && isAffirmativeAnswer(message)) data.submissionConfirmed = 'Sí'
     if (missingField === 'contact' && !data.phone && !data.email) {
@@ -5459,23 +5414,11 @@ function updateChatbotWorkflow(workflow, message, chatMessages = []) {
     }
   }
 
-  if (workflow.type === 'quote' && !data.needsQuantityHelp && missingField === 'quantity' && directAnswer && !hasProductPackageQuantity(message)) {
+  if (workflow.type === 'quote' && !data.needsQuantityHelp && missingField === 'quantity' && directAnswer && parseQuoteQuantity(message, getChatbotProductPresentations(data.product)).kind === 'unknown') {
     validationError = validationError || 'quantity'
   }
 
-  if (workflow.type === 'quote' && data.needsQuantityHelp && data.operationSize && data.usageFrequency && data.solutionVolume && !data.quantity) {
-    const estimate = buildChatbotQuantityEstimate(data.product, data.dailySolutionLiters || 1)
-    if (estimate) {
-      data.quantityEstimate = estimate
-      data.quantity = `${estimate.quantity} (estimación inicial)`
-    }
-  }
-
-  if (workflow.type === 'quote' && missingField === 'quantityConfirmed' && !isAffirmativeAnswer(message) && !dailySolutionLiters) {
-    validationError = 'quantityConfirmation'
-  }
-
-  if (workflow.type === 'quote' && ['selectionConfirmed', 'orderConfirmed', 'submissionConfirmed'].includes(missingField) && !data[missingField] && !isAffirmativeAnswer(message)) {
+  if (workflow.type === 'quote' && !validationError && ['selectionConfirmed', 'orderConfirmed', 'submissionConfirmed'].includes(missingField) && !data[missingField] && !isAffirmativeAnswer(message) && !data.requestedProductCount) {
     validationError = `${missingField}Required`
   }
 
@@ -5506,47 +5449,52 @@ function getChatbotWorkflowResponse(workflow) {
   if (validationError === 'preferredTime') return 'No pude reconocer el horario. Puedes responder, por ejemplo: “9:00 a. m.”, “2:30 p. m.” o “en la mañana”.'
 
   if (type === 'quote') {
+    if (validationError === 'orderChangeTarget') return 'Claro, podemos corregir la solicitud. ¿Qué deseas cambiar: los productos, la presentación o la cantidad de envases?'
+    if (validationError === 'productCountClarification') return `${buildQuoteOrderSummary(data)}\n\n¿Quieres cambiar algún producto o la cantidad de uno de ellos?`
+    if (validationError === 'ambiguousProductCount') return `Para anotarlo bien: ¿quieres ${data.ambiguousCount} unidades de ${data.product || 'este producto'} o ${data.ambiguousCount} productos diferentes? Si son unidades, dime la presentación, por ejemplo “${data.ambiguousCount} de 1.900 CC”.`
     if (validationError === 'ambiguousProduct') return 'Quiero continuar con el producto correcto, pero mencionamos más de una opción. ¿Cuál producto deseas comprar?'
-    if (validationError === 'quantity') return 'Ese dato describe tu operación, pero no una cantidad de compra. Puedo estimarla contigo: dime cuántas mesas, metros cuadrados u otras unidades atiendes y con qué frecuencia.'
-    if (validationError === 'cityQuantityMismatch') return 'La cantidad ya quedó orientada con la estimación anterior. Esa respuesta no corresponde al dato pendiente y no la guardaré como ciudad. ¿En qué ciudad necesitas la entrega?'
-    if (validationError === 'quantityConfirmation') return 'Antes de continuar necesito confirmar la estimación. Puedes responder “sí, me sirve” o indicarme cuántos litros de solución preparan al día para recalcularla.'
+    if (validationError === 'quantity') return 'Todavía no tengo una cantidad de compra. Si no la conoces, dime “no sé” y registraré los datos de tu operación para que el vendedor te asesore sin inventar rendimientos.'
+    if (validationError === 'unsupportedPresentation') return 'No encuentro esa presentación en el catálogo publicado para este producto. Dime cuál de las presentaciones mostradas deseas solicitar, o deja la presentación por definir con el vendedor.'
     if (validationError === 'selectionConfirmedRequired') return 'Necesito confirmar primero la selección de productos. Responde “sí” para incluirlos todos o dime cuál deseas retirar.'
-    if (validationError === 'orderConfirmedRequired') return 'Antes de pedir los datos de entrega necesito confirmar productos y cantidades. Responde “sí” si el resumen es correcto o indícame qué deseas cambiar.'
+    if (validationError === 'orderConfirmedRequired') return `${buildQuoteOrderSummary(data)}\n\n¿Está correcto o qué deseas cambiar?`
     if (validationError === 'submissionConfirmedRequired') return 'La solicitud todavía no se ha enviado. Responde “sí, enviar” para confirmarla o indícame qué dato deseas corregir.'
     if (missingField === 'product') {
       const recommendation = getChatbotSectorRecommendation(data.sector)
       if (recommendation) {
         return `Para ${recommendation.label}, normalmente se consideran estas soluciones:\n\n${recommendation.products.map((product) => `• ${product.name}`).join('\n')}\n\n¿Cuál deseas cotizar? También puedes indicarme otra necesidad.`
       }
-      return 'Con gusto preparo la cotización. ¿Qué producto necesitas o qué tipo de espacio deseas atender?'
+      return 'Con gusto preparo tu solicitud de cotización. ¿Qué producto necesitas o qué tipo de espacio deseas atender?'
+    }
+    if (missingField === 'productCountPending') {
+      const remaining = data.requestedProductCount - getQuoteProductNames(data).length
+      return `Tengo ${getQuoteProductNames(data).length} de los ${data.requestedProductCount} productos que quieres incluir. ¿Cuál es ${remaining === 1 ? 'el producto adicional' : 'otro de los productos adicionales'}?`
     }
     if (missingField === 'selectionConfirmed') {
       return `${buildQuoteOrderSummary(data)}\n\n¿Confirmas que deseas incluir estos ${getQuoteProductNames(data).length} productos en la cotización?`
     }
     if (missingField === 'quantity') {
+      const pendingItem = getQuoteLineItems(data).find((item) => !item.quantity)
+      if (pendingItem?.presentation) {
+        return `Para ${pendingItem.name} anoté la presentación ${pendingItem.presentation}, pero todavía no la cantidad de compra. ¿Cuántos envases de esa presentación deseas? Si no lo sabes, puedo ayudarte a orientarla.`
+      }
       if (getQuoteProductNames(data).length > 1) {
-        return `${buildQuoteOrderSummary(data)}\n\nIndícame la cantidad para cada producto. Puedes responder, por ejemplo, “10 galones de cada uno” o especificar una cantidad diferente por producto.`
+        return `${buildQuoteOrderSummary(data)}\n\n¿Cuánto deseas solicitar de ${pendingItem?.name || 'cada producto'}? Puedes darme una cantidad distinta para cada uno o decir “10 galones de cada uno”.`
       }
       const presentations = getChatbotProductPresentations(data.product)
       const presentationText = presentations.length
         ? `\n\nPresentaciones publicadas:\n${presentations.map((presentation) => `• ${presentation}`).join('\n')}`
         : ''
-      return `Perfecto, cotizaremos ${data.product}.${presentationText}\n\n¿Qué cantidad y presentación necesitas? Si no lo sabes, dime “ayúdame a estimar” y te guío.`
+      return `Perfecto, registraremos tu interés en ${data.product}.${presentationText}\n\n¿Qué cantidad y presentación deseas solicitar? Si no lo sabes, dime “no sé” y tomaré los datos de tu operación para que un vendedor te asesore.`
     }
-    if (missingField === 'operationSize') return 'Claro. Para orientarte sin inventar una cantidad, cuéntame el tamaño de tu operación: por ejemplo, metros cuadrados, habitaciones, puestos, empleados o consumo actual.'
-    if (missingField === 'usageFrequency') return '¿Con qué frecuencia usarían el producto: diariamente, varias veces por semana o de forma ocasional? El equipo comercial validará contigo la cantidad final.'
-    if (missingField === 'solutionVolume') return `Ya tengo ${data.operationSize} y una frecuencia ${data.usageFrequency}. Para convertir la dosificación en una cantidad de compra, ¿cuántos litros de solución preparada usarían al día? Si no lo sabes, responde “no sé” y calcularé un escenario inicial claramente identificado.`
-    if (missingField === 'quantityConfirmed' && data.quantityEstimate) {
-      const estimate = data.quantityEstimate
-      return `Estimación inicial para ${data.operationSize} con uso ${data.usageFrequency}\n\n• Dosificación publicada: ${estimate.dilutionMlPerLiter} ml por 1 L de agua.\n• Supuesto: ${estimate.dailySolutionLiters} L de solución preparada al día.\n• Consumo aproximado: ${estimate.monthlyConcentrateMl} ml de concentrado al mes.\n• Compra inicial sugerida: ${estimate.quantity}.\n• Duración aproximada bajo ese supuesto: ${estimate.estimatedDays} días.\n\nEl equipo comercial validará la cantidad final. ¿Te sirve esta estimación o preparan más de ${estimate.dailySolutionLiters} L al día?`
-    }
+    if (missingField === 'operationSize') return 'No pasa nada si aún no conoces la cantidad. ¿Qué tamaño tiene el área u operación que atenderás? Por ejemplo, número de mesas, baños o habitaciones. Si tampoco lo sabes, puedes decir “no sé”.'
+    if (missingField === 'usageFrequency') return '¿Con qué frecuencia usarían el producto: a diario, varias veces por semana u ocasionalmente? Si no lo sabes, lo dejamos por definir con el vendedor.'
     if (missingField === 'orderConfirmed') return `${buildQuoteOrderSummary(data)}\n\n¿Confirmas que estos productos y cantidades son correctos antes de continuar con los datos de entrega?`
     if (missingField === 'city') return '¿En qué ciudad necesitas la entrega?'
-    if (missingField === 'address') return '¿Cuál es la dirección de entrega? La necesitamos para calcular el transporte.'
-    if (missingField === 'name') return '¿A nombre de quién preparamos la cotización?'
+    if (missingField === 'address') return '¿Cuál sería la dirección de entrega? El vendedor confirmará las condiciones de transporte.'
+    if (missingField === 'name') return '¿A nombre de quién registramos esta solicitud?'
     if (missingField === 'phone') return '¿Cuál es tu número de teléfono de contacto?'
-    if (missingField === 'email') return '¿A qué correo electrónico debemos enviar la cotización?'
-    if (missingField === 'submissionConfirmed') return `${buildQuoteOrderSummary(data, { includeContact: true })}\n\nEsta es la solicitud completa. ¿Confirmas que deseas enviarla al equipo comercial de Naval?`
+    if (missingField === 'email') return '¿A qué correo puede responderte el vendedor con la cotización?'
+    if (missingField === 'submissionConfirmed') return `${buildQuoteOrderSummary(data, { includeContact: true })}\n\nEsta es la solicitud completa, no una cotización con precio. Un vendedor revisará disponibilidad, cantidades y valores antes de responderte. ¿Confirmas que deseas enviarla al equipo comercial de Naval?`
   }
 
   if (type === 'complaint') {
@@ -5588,6 +5536,12 @@ function buildChatbotWorkflowSubmission(workflow) {
     `Prioridad: ${chatbotRequestPriorities[type] ?? 'NORMAL'}.`,
   ]
   if (data.requestId) lines.push(`ID de solicitud: ${data.requestId}`)
+  if (type === 'quote') {
+    lines.push('Esta es una solicitud de cotización, no una oferta ni un pedido confirmado. El vendedor definirá precios, disponibilidad, cantidades y condiciones.')
+    getQuoteLineItems(data).forEach((item, index) => {
+      lines.push(`Producto ${index + 1}: ${item.name}; presentación: ${item.presentation || 'por definir'}; cantidad solicitada: ${item.quantity || 'por definir con asesor'}`)
+    })
+  }
   const fieldsByType = {
     quote: [['Nombre', 'name'], ['Empresa', 'company'], ['Ciudad', 'city'], ['Dirección', 'address'], ['Teléfono', 'phone'], ['Correo', 'email'], ['Producto', 'product'], ['Cantidad y presentación', 'quantity'], ['Tamaño de la operación', 'operationSize'], ['Frecuencia de uso', 'usageFrequency'], ['Sector', 'sector']],
     complaint: [['Nombre', 'name'], ['Empresa', 'company'], ['Ciudad', 'city'], ['Teléfono', 'phone'], ['Correo', 'email'], ['Pedido o factura', 'orderNumber'], ['Descripción de la queja', 'reason']],
@@ -5602,7 +5556,7 @@ function buildChatbotWorkflowSubmission(workflow) {
 }
 
 function wantsChatbotLinks(message) {
-  return /\b(?:ver|verlo|verla|mostrar|mu[eé]strame|abrir|ir\s+a|ll[eé]vame|enlace|link|p[aá]gina|ficha|descargar|navegar|buscar\s+en\s+el\s+sitio|(?:en\s+)?d[oó]nde|d[oó]nde\s+encuentro)\b/i.test(message)
+  return /\b(?:ver|verlo|verla|mostrar|mu[eé]strame|abrir|ir\s+a|ll[eé]vame|enlace|link|p[aá]gina|ficha|descargar|navegar|buscar\s+en\s+el\s+sitio|cat[aá]logo|portafolio|tienda|contacto|(?:en\s+)?d[oó]nde|d[oó]nde\s+encuentro)\b/i.test(message)
 }
 
 function getProductInterestClarificationResponse(message, product) {
@@ -5649,11 +5603,9 @@ function buildChatbotWhatsappMessage(contactData) {
   return `Hola, quiero continuar mi conversación con un asesor de Naval por WhatsApp.\n\n${details}`
 }
 
-function buildChatbotWhatsappFallbackMessage(intent, chatMessages) {
-  const conversation = formatChatbotConversationText(chatMessages)
+function buildChatbotWhatsappFallbackMessage(intent) {
   const label = chatbotRequestLabels[intent] ?? chatbotRequestLabels.question
-
-  return `Hola, necesito ayuda de Productos Naval.\nTipo de solicitud: ${label}.\n\n${conversation}`.slice(0, 3500)
+  return `Hola, quiero hablar con un asesor de Productos Naval. Motivo: ${label}.`
 }
 
 function getChatbotRecoveryResponse(intent, chatMessages) {
@@ -5710,7 +5662,7 @@ function getLocalChatbotResponse(message, intent, chatMessages = []) {
   )
 
   if (intent === 'human') {
-    const whatsappMessage = buildChatbotWhatsappFallbackMessage(intent, chatMessages)
+    const whatsappMessage = buildChatbotWhatsappFallbackMessage(intent)
     return {
       text: 'Claro. Puedes hablar directamente con un asesor de Productos Naval por WhatsApp en el +57 320 342 8815.',
       whatsappUrl: `${whatsappHref}?text=${encodeURIComponent(whatsappMessage)}`,
@@ -5763,7 +5715,7 @@ function getLocalChatbotResponse(message, intent, chatMessages = []) {
         Hotelero: '¿Qué área quieres atender primero: habitaciones, baños, lavandería o zonas comunes?',
       }[sectorRule.title] || '¿Qué área de la operación quieres atender primero?'
       const nextQuestion = intent === 'quote'
-        ? '¿Cuáles deseas incluir y en qué cantidades? Si aún no lo sabes, puedo ayudarte a estimarlo.'
+        ? '¿Cuáles deseas incluir? Si aún no conoces las cantidades, registraré tu necesidad para que un vendedor te asesore.'
         : sectorAreaQuestion
       return {
         text: `Para ${sectorRule.label}, estas son buenas opciones para comenzar:\n\n${recommendedProducts.map((product) => `• ${product.name}`).join('\n')}\n\n${nextQuestion}`,
@@ -6013,7 +5965,7 @@ function getInitialChatbotMessages() {
       from: 'bot',
       text:
         'Hola, soy tu Asistente Naval.\n\n' +
-        'Te ayudo a elegir productos del catálogo, comparar opciones y estimar presentaciones o cantidades según tu espacio y frecuencia de uso. También puedo gestionar cotizaciones, capacitaciones, quejas, fichas y navegación por la página.\n\n' +
+        'Te ayudo a elegir productos del catálogo, comparar opciones y preparar solicitudes de cotización para que un vendedor te responda. También puedo gestionar capacitaciones, quejas, fichas y navegación por la página.\n\n' +
         'Cuéntame qué necesitas limpiar o qué problema quieres resolver.',
     },
   ]
@@ -6152,8 +6104,11 @@ async function sendToMake(message, { signal, conversation = [], intent = getChat
   const shouldOfferWhatsapp = intent === 'human' && hasChatbotHumanHandoffRequest(conversation)
   const whatsappMessage = buildChatbotWhatsappMessage(conversationContactData)
   const webhookUrl = makeWebhookEndpoint
-  const catalogContext = buildChatbotCatalogContext(conversation)
+  const catalogContext = intent === 'question' ? buildChatbotCatalogContext(conversation) : ''
   const conversationText = `${formatChatbotConversationText(conversation)}\n\n${catalogContext}`
+  const questionOnlyPayload = intent === 'question'
+    ? { message, requestType: 'question', catalogContext }
+    : null
 
   const response = await fetch(webhookUrl, {
     method: 'POST',
@@ -6161,9 +6116,10 @@ async function sendToMake(message, { signal, conversation = [], intent = getChat
       'Content-Type': 'application/json',
     },
     signal,
-    body: JSON.stringify({
+    body: JSON.stringify(questionOnlyPayload || {
       sessionId: getChatbotSessionId(),
       ...webhookPayload,
+      confirmed: ['quote', 'training', 'complaint'].includes(intent) && workflowData.submissionConfirmed === 'Sí',
       requestId: workflowData.requestId || createChatbotRequestId(intent),
       name: workflowData.name || webhookPayload.name || conversationContactData.name,
       company: workflowData.company || webhookPayload.company || conversationContactData.company,
@@ -6173,6 +6129,7 @@ async function sendToMake(message, { signal, conversation = [], intent = getChat
       email: workflowData.email || webhookPayload.email || conversationContactData.email,
       product: workflowData.product || webhookPayload.product || conversationContactData.product,
       quantity: workflowData.quantity || webhookPayload.quantity || conversationContactData.quantity,
+      quoteItems: workflowData.quoteItems || [],
       reason: workflowData.reason || webhookPayload.reason || conversationContactData.reason,
       sector: workflowData.sector || webhookPayload.sector || conversationContactData.sector,
       attendees: workflowData.attendees || '',
@@ -6218,7 +6175,7 @@ async function sendToMake(message, { signal, conversation = [], intent = getChat
     throw new Error('Respuesta inválida')
   }
 
-  const fallbackWhatsappMessage = buildChatbotWhatsappFallbackMessage(intent, conversation)
+  const fallbackWhatsappMessage = buildChatbotWhatsappFallbackMessage(intent)
   const replyText = data.delivered === false && offlineReply
     ? offlineReply
     : data.delivered === false && ['quote', 'complaint', 'training'].includes(intent)
@@ -6297,7 +6254,7 @@ function FloatingChatbot() {
     const isCancellation = Boolean(activeWorkflow || deliveryInquiry) && /\b(?:cancelar|cancela|salir|empezar\s+de\s+nuevo)\b/i.test(text)
     const isExplicitWorkflowSwitch = chatbotWorkflowTypes.has(explicitIntent) &&
       explicitIntent !== activeWorkflow?.type &&
-      chatbotWorkflowStarterPatterns[explicitIntent]?.test(text)
+      isWorkflowStarter(explicitIntent, text)
     const deliveryResponse = !isHumanRequest && !isCancellation && !isExplicitWorkflowSwitch &&
       (isDeliveryInformationRequest(text) || shouldContinueDeliveryInquiry(text, deliveryInquiry))
       ? getDeliveryAssistantResponse(text, deliveryInquiry)
@@ -6308,11 +6265,12 @@ function FloatingChatbot() {
       : isExplicitWorkflowSwitch
         ? createChatbotWorkflow(explicitIntent)
         : activeWorkflow || (chatbotWorkflowTypes.has(explicitIntent) ? createChatbotWorkflow(explicitIntent) : null)
-    const intent = isHumanRequest ? 'human' : deliveryResponse ? 'question' : workflow?.type || explicitIntent
+    let intent = isHumanRequest ? 'human' : deliveryResponse ? 'question' : workflow?.type || explicitIntent
     let workflowSubmission = ''
     let completedWorkflowData = {}
     let offlineReply = ''
     let workflowResponse = null
+    let pausedWorkflowType = ''
 
     if (isHumanRequest) {
       setActiveWorkflow(null)
@@ -6320,10 +6278,20 @@ function FloatingChatbot() {
       setActiveWorkflow(null)
       workflowResponse = { text: 'Listo, cancelé el proceso actual. ¿En qué más puedo ayudarte?' }
     } else if (workflow) {
+      const previousWorkflow = workflow
+      const pendingField = getChatbotWorkflowMissingField(workflow)
       workflow = updateChatbotWorkflow(workflow, text, chatMessages)
-      const nextQuestion = getChatbotWorkflowResponse(workflow)
+      workflow = applyInterpretedTurn(previousWorkflow, workflow, parseLocalTurn(text, previousWorkflow, pendingField, productAssistantCatalog), productAssistantCatalog, pendingField)
+      const nextQuestion = workflow.interruption ? null : getChatbotWorkflowResponse(workflow)
 
-      if (nextQuestion) {
+      if (workflow.interruption === 'question') {
+        setActiveWorkflow(previousWorkflow)
+        intent = 'question'
+        pausedWorkflowType = previousWorkflow.type
+      } else if (workflow.interruption === 'cancel') {
+        setActiveWorkflow(null)
+        workflowResponse = { text: 'Listo, cancelé el proceso actual. ¿En qué más puedo ayudarte?' }
+      } else if (nextQuestion) {
         setActiveWorkflow(workflow)
         workflowResponse = { text: nextQuestion }
       } else {
@@ -6361,7 +6329,13 @@ function FloatingChatbot() {
       productRecommendationResponse ||
       productAssistantResponse ||
       getLocalChatbotResponse(text, intent, [...chatMessages, { from: 'user', text }])
-    const localAssistantResponse = hideUnrequestedChatbotActions(rawLocalAssistantResponse, text)
+    const pauseNote = pausedWorkflowType
+      ? `\n\nTu solicitud de ${chatbotRequestLabels[pausedWorkflowType]?.toLowerCase() || pausedWorkflowType} sigue guardada; podemos retomarla cuando quieras.`
+      : ''
+    const localAssistantResponse = hideUnrequestedChatbotActions(
+      rawLocalAssistantResponse ? { ...rawLocalAssistantResponse, text: `${rawLocalAssistantResponse.text}${pauseNote}` } : null,
+      text,
+    )
     if (typeof window !== 'undefined') {
       window.dataLayer = window.dataLayer || []
       window.dataLayer.push({
@@ -6421,7 +6395,7 @@ function FloatingChatbot() {
           chatMessage.id === writingMessageId
             ? {
                 from: 'bot',
-                text: botResponse.reply,
+                text: `${botResponse.reply}${pauseNote}`,
                 whatsappUrl: botResponse.whatsappUrl,
               }
             : chatMessage,
@@ -6437,7 +6411,7 @@ function FloatingChatbot() {
       requestAbortControllerRef.current = null
       setStatus('error')
       const recoveryText = offlineReply || getChatbotRecoveryResponse(intent, conversationForWebhook)
-      const whatsappMessage = buildChatbotWhatsappFallbackMessage(intent, conversationForWebhook)
+      const whatsappMessage = buildChatbotWhatsappFallbackMessage(intent)
       setChatMessages((currentMessages) =>
         currentMessages.map((chatMessage) =>
           chatMessage.id === writingMessageId

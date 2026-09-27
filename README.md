@@ -65,13 +65,15 @@ Vite mostrará la dirección local en la terminal.
 | Variable | Entorno | Uso |
 | --- | --- | --- |
 | `MAKE_WEBHOOK_URL` | Servidor | URL privada del webhook de Make utilizada por la función serverless. |
-| `OPENAI_API_KEY` | Servidor, opcional | Activa el respaldo para preguntas abiertas mediante la API de Responses cuando Make falla. |
-| `OPENAI_MODEL` | Servidor, opcional | Modelo usado por el respaldo de OpenAI. Valor predeterminado: `gpt-4.1-mini`. |
+| `OPENAI_API_KEY` | Servidor, opcional | Activa respuestas a preguntas abiertas mediante la API de Responses; no se usa para registrar solicitudes comerciales. |
+| `OPENAI_MODEL` | Servidor, opcional | Modelo usado para preguntas abiertas. Valor predeterminado: `gpt-4.1-mini`. |
 | `VITE_MAKE_WEBHOOK_ENDPOINT` | Navegador, opcional | Sobrescribe la ruta pública usada por el frontend. Si está vacía, se usa `/api/make-webhook`. |
 
 `MAKE_WEBHOOK_URL` y `OPENAI_API_KEY` no deben exponerse al navegador. Toda variable con prefijo `VITE_` forma parte del bundle público y no puede contener secretos, tokens ni credenciales.
 
-El chat completa primero cada solicitud comercial dentro de la conversación y la envía a Make únicamente cuando ya tiene los datos necesarios. Si Make falla, responde con el respaldo de OpenAI para preguntas generales o con una guía local. Los enlaces de navegación y documentos se muestran cuando el cliente solicita verlos; el enlace de WhatsApp solo aparece cuando pide explícitamente hablar con una persona. Nunca confirma que una solicitud fue registrada cuando el webhook no pudo recibirla.
+El chat conserva el estado de cotizaciones, capacitaciones y quejas mientras resuelve preguntas intermedias. Usa los datos publicados del catálogo para orientar, sin inventar precios, existencias ni rendimientos. Confirma el resumen y los datos de contacto antes de enviar una solicitud a Make; un vendedor prepara la cotización final. Las preguntas no se envían a Make: primero se atienden localmente y, si hace falta y hay clave configurada, se consulta OpenAI con la pregunta reciente y contexto limitado del catálogo, sin historial de datos de contacto. Los enlaces de navegación y documentos se muestran cuando el cliente solicita verlos; WhatsApp se ofrece al pedir un humano o contacto. Nunca confirma que una solicitud fue registrada cuando el webhook no pudo recibirla.
+
+La búsqueda del catálogo es local y léxica, no una base vectorial externa. Las reglas de validación y confirmación de solicitudes no dependen del modelo. En desarrollo local, sin `OPENAI_API_KEY` ni `MAKE_WEBHOOK_URL`, se pueden probar las respuestas y los formularios conversacionales, pero no verificar respuestas remotas ni entregas reales a Excel o correo.
 
 ## Scripts
 

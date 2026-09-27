@@ -3,9 +3,11 @@ import test from 'node:test'
 
 import handler, {
   buildOfflineReply,
+  containsPersonalDetails,
   extractOpenAIReply,
   extractWebhookReply,
   getSafeConversation,
+  hasUnverifiedCommercialClaim,
 } from '../api/make-webhook.js'
 import {
   buildProductAssistantCatalog,
@@ -214,6 +216,7 @@ test('reconoce referencias al producto anterior y calcula datos publicados', () 
   assert.equal(isAmbiguousProductInterest('quiero verlo'), false)
   assert.equal(isAffirmativeAnswer('sí, me sirve'), true)
   assert.equal(isAffirmativeAnswer('sí, enviar'), true)
+  assert.equal(isAffirmativeAnswer('Sí, está correcto'), true)
   assert.equal(extractDailySolutionLiters('preparamos 2 litros de solución al día'), 2)
   assert.equal(parseDilutionMlPerLiter('Limpieza media: 10 ml/Pto a 1 L de agua.'), 10)
   assert.equal(parsePresentationMilliliters('1.900 CC'), 1900)
@@ -230,6 +233,20 @@ test('limita y sanea el historial que se envía al modelo', () => {
   const safeConversation = getSafeConversation({ messages })
   assert.equal(safeConversation.length, 16)
   assert.ok(safeConversation.every(({ role }) => role === 'user' || role === 'assistant'))
+})
+
+test('no consulta al modelo cuando una pregunta incluye datos personales', () => {
+  assert.equal(containsPersonalDetails('¿Pueden llamar al 320 342 8815?'), true)
+  assert.equal(containsPersonalDetails('Mi correo es cliente@ejemplo.com'), true)
+  assert.equal(containsPersonalDetails('Entregan en Carrera 20 # 10-30'), true)
+  assert.equal(containsPersonalDetails('¿Qué presentación tiene Desengrasante de 1.900 cc?'), false)
+})
+
+test('rechaza promesas comerciales o enlaces no verificados del modelo', () => {
+  assert.equal(hasUnverifiedCommercialClaim('Cuesta $28.000 y tenemos stock disponible'), true)
+  assert.equal(hasUnverifiedCommercialClaim('Rinde 100 metros cuadrados'), true)
+  assert.equal(hasUnverifiedCommercialClaim('Mira https://ejemplo.com'), true)
+  assert.equal(hasUnverifiedCommercialClaim('No tengo precios ni disponibilidad verificados; te ayudo a preparar la solicitud.'), false)
 })
 
 test('la respuesta sin conexión no afirma que la solicitud fue registrada', () => {
@@ -263,7 +280,7 @@ test('el endpoint devuelve una ayuda util si Make responde con error', async () 
   }
 
   try {
-    await handler({ method: 'POST', body: { message: 'Quiero cotizar', requestType: 'quote' } }, response)
+    await handler({ method: 'POST', body: { message: 'Solicitud confirmada', requestType: 'quote', confirmed: true } }, response)
   } finally {
     global.fetch = originalFetch
     if (originalWebhookUrl === undefined) delete process.env.MAKE_WEBHOOK_URL
@@ -282,7 +299,11 @@ test('una confirmación técnica de Make no se presenta como respuesta a una pre
   const originalFetch = global.fetch
   const originalWebhookUrl = process.env.MAKE_WEBHOOK_URL
   const originalOpenAIKey = process.env.OPENAI_API_KEY
-  global.fetch = async () => new Response('Accepted', { status: 200 })
+  let networkCalls = 0
+  global.fetch = async () => {
+    networkCalls += 1
+    return new Response('Accepted', { status: 200 })
+  }
   process.env.MAKE_WEBHOOK_URL = 'https://example.test/webhook'
   delete process.env.OPENAI_API_KEY
 
@@ -305,6 +326,30 @@ test('una confirmación técnica de Make no se presenta como respuesta a una pre
 
   assert.equal(payload.delivered, false)
   assert.equal(payload.provider, 'local')
+  assert.equal(networkCalls, 0)
   assert.match(payload.reply, /superficie|espacio/i)
   assert.doesNotMatch(payload.reply, /recibimos|registramos/i)
+})
+
+test('una solicitud sin confirmar nunca llega a Make', async () => {
+  const originalFetch = global.fetch
+  const originalWebhookUrl = process.env.MAKE_WEBHOOK_URL
+  const originalOpenAIKey = process.env.OPENAI_API_KEY
+  let networkCalls = 0
+  global.fetch = async () => { networkCalls += 1; throw new Error('No debe enviarse') }
+  process.env.MAKE_WEBHOOK_URL = 'https://example.test/webhook'
+  delete process.env.OPENAI_API_KEY
+  let payload
+  const response = { status() { return this }, json(value) { payload = value; return value }, setHeader() {} }
+  try {
+    await handler({ method: 'POST', body: { message: 'Quiero cotizar', requestType: 'quote' } }, response)
+  } finally {
+    global.fetch = originalFetch
+    if (originalWebhookUrl === undefined) delete process.env.MAKE_WEBHOOK_URL
+    else process.env.MAKE_WEBHOOK_URL = originalWebhookUrl
+    if (originalOpenAIKey === undefined) delete process.env.OPENAI_API_KEY
+    else process.env.OPENAI_API_KEY = originalOpenAIKey
+  }
+  assert.equal(networkCalls, 0)
+  assert.equal(payload.delivered, false)
 })

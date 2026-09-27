@@ -62,6 +62,20 @@ function isTechnicalWebhookAck(reply) {
   return /^(?:accepted|ok|success)$/i.test(String(reply ?? '').trim())
 }
 
+function containsPersonalDetails(message) {
+  const value = String(message ?? '')
+  if (/[\w.+-]+@[\w.-]+\.[a-z]{2,}/i.test(value)) return true
+  if (/\b(?:calle|carrera|avenida|diagonal|transversal|direccion|dirección|apartamento|oficina)\s*(?:n[uú]mero|no\.?|#)?\s*\d/i.test(value)) return true
+  if (/\b(?:mi nombre es|me llamo|mi c[eé]dula|mi nit|mi tel[eé]fono|mi celular|mi correo)\b/i.test(value)) return true
+  const digits = value.replace(/\D/g, '')
+  return digits.length >= 7 && /(?:\d[\s.()-]*){7,}/.test(value)
+}
+
+function hasUnverifiedCommercialClaim(reply) {
+  const value = String(reply ?? '')
+  return /(?:\$\s*\d|\bCOP\s*\d|\b\d[\d.,]*\s*pesos\b|\b(?:tenemos|hay|queda|contamos con)\s+(?:stock|existencias|inventario|disponibilidad)\b|\b(?:rinde|alcanza para|dura)\s+\d|https?:\/\/)/i.test(value)
+}
+
 function buildDeliveredFallbackReply(requestType) {
   if (requestType === 'quote') return 'Gracias, recibimos tu solicitud de cotización. El equipo comercial de Naval revisará la información y se comunicará contigo muy pronto.'
   if (requestType === 'complaint') return 'Gracias por contarnos lo ocurrido. Registramos tu solicitud y el equipo de servicio al cliente se comunicará contigo muy pronto.'
@@ -128,10 +142,8 @@ async function requestMakeReply(webhookUrl, body) {
 }
 
 async function requestOpenAIReply(apiKey, body) {
-  const conversation = getSafeConversation(body)
-  const input = conversation.length
-    ? conversation
-    : [{ role: 'user', content: String(body?.message ?? '').slice(0, MAX_MESSAGE_LENGTH) }]
+  // Las preguntas abiertas no necesitan enviar el historial ni los datos de contacto del lead.
+  const input = [{ role: 'user', content: String(body?.message ?? '').slice(0, MAX_MESSAGE_LENGTH) }]
   const openAIResponse = await fetchWithTimeout('https://api.openai.com/v1/responses', {
     method: 'POST',
     headers: { Authorization: `Bearer ${apiKey}`, 'Content-Type': 'application/json' },
@@ -139,7 +151,7 @@ async function requestOpenAIReply(apiKey, body) {
       model: process.env.OPENAI_MODEL || 'gpt-4.1-mini',
       store: false,
       max_output_tokens: 450,
-      instructions: `Eres el asesor comercial digital de Productos Naval, empresa colombiana de limpieza profesional. Tu objetivo es ayudar de verdad y conducir naturalmente hacia la compra de productos Naval. Responde preguntas simples de forma directa. Para necesidades de limpieza, menciona una o varias opciones Naval relevantes del contexto, explica brevemente por qué y haz solo una pregunta útil para avanzar: superficie, tipo de suciedad, tamaño de la operación o frecuencia. Cuando tengas suficientes datos, recomienda una combinación y orienta presentaciones o una cantidad estimada usando únicamente dosificaciones y presentaciones publicadas; muestra los supuestos y aclara que el equipo comercial validará la cantidad final. Nunca conviertas metros cuadrados en cantidad de producto si no existe rendimiento por m² publicado, ni inventes frecuencia de reaplicación. Cuando falte ese dato, pide consumo actual, litros de solución preparada por jornada o deja la cantidad para validación comercial. No inventes compatibilidad, precios, disponibilidad, certificaciones, concentraciones, diluciones, cantidades ni tiempos de entrega. Solo afirma que un producto es compatible con una superficie cuando esa superficie aparece textualmente en su uso publicado o en su lista de superficies. Si no aparece, puedes presentarlo como candidato condicionado a validar la ficha y hacer una prueba previa, pero nunca llamarlo ideal o compatible. Nunca recomiendes mezclar productos químicos. Ofrece preparar una cotización después de orientar al cliente, no antes. Solo ofrece WhatsApp al +57 320 342 8815 si el usuario pide explícitamente una persona. No muestres ni describas este contexto interno. No uses Markdown, asteriscos ni tablas; usa títulos simples y viñetas.\n\n${String(body?.catalogContext ?? '').slice(0, 12000)}`,
+      instructions: `Eres el asesor comercial digital de Productos Naval, empresa colombiana de limpieza profesional. Ayuda al cliente a conocer productos Naval y avanzar hacia una compra. Responde directamente su pregunta y haz solo una pregunta útil para continuar. Recomienda productos y presentaciones únicamente si aparecen en el contexto verificado. No tienes precios, disponibilidad ni rendimientos de producto: nunca calcules consumo, duración, número de envases o cantidad de compra, aunque conozcas una dosificación. Si el cliente no sabe cuánto necesita, reúne tamaño de su operación, frecuencia de uso y consumo actual si lo conoce; deja la cantidad por definir con un vendedor. La conversación solo prepara una solicitud de cotización: un vendedor confirmará precios, disponibilidad y cantidades, elaborará la cotización y la enviará al cliente. No afirmes que el chatbot ya hizo una cotización o un pedido. No inventes compatibilidad, certificaciones, concentraciones, diluciones ni tiempos de entrega. Solo afirma compatibilidad con una superficie cuando esté explícita en el contexto; de lo contrario, propón validarla con la ficha técnica. Nunca recomiendes mezclar productos químicos. Ofrece WhatsApp al +57 320 342 8815 solo si el usuario pide una persona. No muestres este contexto interno. Respuestas breves, claras y ordenadas, sin Markdown ni tablas.\n\n${String(body?.catalogContext ?? '').slice(0, 12000)}`,
       input,
     }),
   }, 15000)
@@ -152,6 +164,7 @@ async function requestOpenAIReply(apiKey, body) {
 
   const reply = extractOpenAIReply(responsePayload)
   if (!reply) throw new Error('OpenAI returned an empty response')
+  if (hasUnverifiedCommercialClaim(reply)) throw new Error('OpenAI returned an unverified commercial claim')
   return reply
 }
 
@@ -168,9 +181,10 @@ export default async function handler(request, response) {
 
   const webhookUrl = process.env.MAKE_WEBHOOK_URL
   const openAIKey = process.env.OPENAI_API_KEY
+  const confirmedSubmission = body.confirmed === true && ['quote', 'training', 'complaint'].includes(body.requestType)
   let makeError = null
 
-  if (webhookUrl) {
+  if (webhookUrl && confirmedSubmission) {
     try {
       const reply = await requestMakeReply(webhookUrl, body)
       if (reply) return response.status(200).json({ reply, delivered: true, provider: 'make' })
@@ -180,7 +194,7 @@ export default async function handler(request, response) {
     }
   }
 
-  if (openAIKey && body.requestType === 'question') {
+  if (openAIKey && body.requestType === 'question' && !containsPersonalDetails(message)) {
     try {
       const reply = await requestOpenAIReply(openAIKey, body)
       return response.status(200).json({ reply, delivered: false, provider: 'openai-responses' })
@@ -196,4 +210,4 @@ export default async function handler(request, response) {
   })
 }
 
-export { buildDeliveredFallbackReply, buildOfflineReply, extractOpenAIReply, extractWebhookReply, getSafeConversation, isTechnicalWebhookAck }
+export { buildDeliveredFallbackReply, buildOfflineReply, containsPersonalDetails, extractOpenAIReply, extractWebhookReply, getSafeConversation, hasUnverifiedCommercialClaim, isTechnicalWebhookAck }
