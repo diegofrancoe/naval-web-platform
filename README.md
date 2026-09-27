@@ -1,6 +1,6 @@
-# Naval Web Platform
+# NAVAL — AI Business Ecosystem
 
-Plataforma web corporativa y comercial de Productos Naval para presentar la marca, sus líneas de limpieza, aplicaciones por sector y el catálogo público de productos.
+Ecosistema digital B2B de Productos Naval que combina plataforma web, catálogo, asistente comercial y automatización; el ERP operativo relacionado continúa en desarrollo privado.
 
 ## Objetivo
 
