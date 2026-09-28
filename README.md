@@ -1,6 +1,10 @@
+<p align="center"><img src="public/icons/naval-icon.svg" alt="Productos Naval" width="100"></p>
+
 # NAVAL — AI Business Ecosystem
 
-Ecosistema digital B2B de Productos Naval que combina plataforma web, catálogo, asistente comercial y automatización; el ERP operativo relacionado continúa en desarrollo privado.
+Ecosistema digital B2B de Productos Naval que combina plataforma web, catálogo, asistente comercial y automatización. El ERP operativo relacionado continúa en desarrollo privado.
+
+[Sitio web](https://www.productosnaval.com/) · [Caso de estudio](https://www.diegofrancoe.com/proyectos/naval)
 
 ## Objetivo
 
@@ -91,4 +95,4 @@ El resultado se genera en `dist/`, carpeta excluida del control de versiones.
 
 El sitio corporativo, catálogo, fichas públicas, tienda de cotización, asistente local, chat comercial y proxy serverless están implementados. Para operar la automatización comercial en un entorno real se debe configurar de forma segura el webhook externo y validar el tratamiento de los datos recibidos.
 
-Este es el README inicial del repositorio independiente. La documentación operativa detallada, mejoras funcionales y cambios de infraestructura se gestionarán posteriormente mediante ramas, commits y pull requests.
+**Producción:** https://www.productosnaval.com/
