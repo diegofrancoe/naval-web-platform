@@ -1,44 +1,32 @@
-<p align="center"><img src="docs/naval-brand-header.svg" alt="NAVAL" width="100%"></p>
+<p align="center"><img src="docs/naval-brand-header.svg" alt="NAVAL" width="420"></p>
 
-# NAVAL — B2B Web Platform
+<h1 align="center">NAVAL — Business Digital Ecosystem</h1>
+<p align="center"><strong>B2B product platform · AI commercial assistant · technical content · workflow automation</strong></p>
+<p align="center"><a href="https://www.productosnaval.com/"><strong>Live website</strong></a> · <a href="https://www.diegofrancoe.com/proyectos/naval"><strong>Case study</strong></a></p>
 
-**Product discovery · commercial assistant · technical content · workflow automation**
+NAVAL helps institutional and business customers discover professional-cleaning products, review technical information, prepare quote requests and interact with a commercial assistant. The operational ERP is developed separately and remains private.
 
-[Live website](https://www.productosnaval.com/) · [Case study](https://www.diegofrancoe.com/proyectos/naval)
+| Product catalog | AI commercial assistant | Technical documents | Workflow automation |
+|---|---|---|---|
+| Families, products and presentations | Guided commercial conversations | Public technical and safety files | Make + serverless integrations |
 
-NAVAL is the public B2B platform for Productos Naval. It helps institutional and business customers discover professional-cleaning products, review technical information, prepare quote requests and interact with a commercial assistant. The operational ERP is developed separately and remains private.
+### Tech stack
+![React](https://img.shields.io/badge/React-20232A?logo=react) ![Vite](https://img.shields.io/badge/Vite-20232A?logo=vite) ![OpenAI](https://img.shields.io/badge/OpenAI-20232A?logo=openai) ![Make](https://img.shields.io/badge/Make-20232A?logo=make) ![Vercel](https://img.shields.io/badge/Vercel-20232A?logo=vercel)
 
-## Highlights
-
-- Responsive corporate and B2B product experience.
-- Catalog with product families, presentations, images and technical documents.
-- Product and sector pages with SEO metadata and generated sitemap.
-- Quote-oriented cart and commercial forms; no direct payment processing.
-- Commercial chatbot with conversation context and guided flows.
-- Product knowledge for recommendations, uses, presentations and documentation.
-- Serverless API boundary for Make and OpenAI integrations.
-- Graceful local fallback when external automation is unavailable.
-
-## Architecture
-
+### Architecture
 ~~~mermaid
 flowchart LR
- C[Customer] --> W[React + Vite website]
- W --> CAT[Product catalog]
+ C[Customer] --> W[React + Vite]
+ W --> CAT[Catalog]
  W --> CHAT[Commercial assistant]
  CHAT --> K[Product knowledge]
  CHAT --> API[Serverless API]
- API --> M[Make automation]
+ API --> M[Make]
  API --> O[OpenAI fallback]
- M --> N[Commercial workflows]
- ERP[Private NAVAL ERP] -. separate system .-> W
+ ERP[Private ERP] -. separate .-> W
 ~~~
 
-## Stack
-
-React 19 · Vite 7 · JavaScript / JSX · CSS · Vercel Functions · Make · OpenAI Responses API · Vercel
-
-## Run locally
+<details><summary><strong>Run locally & repository structure</strong></summary>
 
 ~~~bash
 npm install
@@ -46,17 +34,14 @@ cp .env.example .env.local
 npm run dev
 ~~~
 
-Make and OpenAI credentials remain server-side and are configured outside the repository.
-
-## Project structure
-
 ~~~text
 src/        UI, catalog, product data and assistant
 api/        Serverless integration boundary
-public/     Technical documents, SEO and public assets
+public/     Technical documents, SEO and assets
 scripts/    Sitemap and automation utilities
 ~~~
 
-**Production:** https://www.productosnaval.com/
+Make and OpenAI credentials remain server-side and are not stored in the repository.
+</details>
 
-Built by **Diego Franco**.
+<p align="center"><strong>Production:</strong> https://www.productosnaval.com/</p>
