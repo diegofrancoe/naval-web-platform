@@ -1,4 +1,8 @@
-<p align="center"><img src="docs/readme-hero.svg" alt="Project overview" width="100%"></p>
+<p align="center"><a href="https://www.productosnaval.com/"><img src="docs/readme-hero.svg" alt="Project overview" width="100%"></a></p>
+
+<p align="center"><a href="https://www.productosnaval.com/"><strong>Live website</strong></a> · <a href="https://www.diegofrancoe.com/proyectos/naval"><strong>Case study</strong></a></p>
+
+NAVAL connects a public B2B product platform with a commercial assistant and workflow automation. Customers can explore products and technical documentation, prepare quote requests and use guided conversational flows, while server-side integrations keep Make and OpenAI credentials outside the browser. The operational ERP remains a separate private system currently under development.
 
 ### Architecture
 ~~~mermaid
