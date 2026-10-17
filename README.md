@@ -4,6 +4,22 @@ NAVAL is a B2B digital platform for a professional cleaning-products company. It
 
 The project is designed as the customer-facing side of a broader business ecosystem. The website remains independent from the private ERP, while server-side integrations connect the commercial assistant to product context, OpenAI and workflow automation without exposing internal credentials in the browser.
 
+### Product Overview
+
+A B2B customer experience combining product discovery, technical documents and commercial assistance.
+
+### Product Design & UX/UI
+
+Catalog navigation, technical information and a conversational interface connect customer questions to quotation paths. The experience is designed for clarity across responsive screens.
+
+### What I Built
+
+A responsive catalog, AI-assisted commercial conversation and secure server-side integrations. The private ERP is a separate product.
+
+### AI & Automation
+
+AI-assisted customer interactions and Make workflows belong to this website; they should not be confused with the separate ERP demo, which does not currently implement AI models.
+
 ### Core stack
 ![React](https://img.shields.io/badge/React-252824?style=flat-square&logo=react&logoColor=74CDA7) ![Vite](https://img.shields.io/badge/Vite-252824?style=flat-square&logo=vite&logoColor=74CDA7) ![OpenAI](https://img.shields.io/badge/OpenAI-252824?style=flat-square&logo=openai&logoColor=74CDA7) ![Make](https://img.shields.io/badge/Make-252824?style=flat-square&logo=make&logoColor=74CDA7) ![Vercel](https://img.shields.io/badge/Vercel-252824?style=flat-square&logo=vercel&logoColor=74CDA7)
 
